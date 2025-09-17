@@ -1,128 +1,137 @@
 import os, os.path, time, argparse
-
-import gymnasium as gym
 import numpy as np
+import gymnasium as gym
+import matplotlib.pyplot as plt
+
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-
-import matplotlib.pyplot as plt
-import reacher_obstacles.envs
 from reacher_obstacles.envs.reacher_v6 import CONFIGS
 from reacher_obstacles.utils.experiments import EXPERIMENTS
 
-os.makedirs("models", exist_ok=True)  # Create dirs
+os.makedirs("models", exist_ok=True)
 os.makedirs("log", exist_ok=True)
+os.makedirs("images", exist_ok=True)
+
 
 parser = argparse.ArgumentParser()
-
-parser.add_argument(
-    "--algo",
-    type=str,
-    default="SAC",
-    help="Algorithm",
-)
-
+parser.add_argument("--algo", type=str, default="SAC", help="Algorithm")
 assert(parser.parse_known_args()[0].algo in ["SAC", "PPO"])
 model_class = SAC if parser.parse_known_args()[0].algo == "SAC" else PPO
 
-parser.add_argument(
-    "expid",
-    type=str,
-    default="1a",
-    help="Experiment id",
-)
+parser.add_argument("expid", type=str, help="Experiment id")
+parser.add_argument("--seed", type=int, default=10)
+parser.add_argument("--sjrs", action="store_true", help="Load ;SJRS model")
 
-parser.add_argument(
-    "--seed",
-    type=int,
-    default=10,
-    help="Seed",
-)
+parser.add_argument("--model-name", type=str, default='', help="Model name for torque plot")
+
+# optional power-user override
+parser.add_argument("--suffix", type=str, default=None, help="Exact suffix to append (e.g., ';SJRS')")
 
 args = parser.parse_args()
 
 expid = args.expid
-seed=args.seed
+seed  = args.seed
 
-envid=EXPERIMENTS[expid]['envid']
-log_name = f"{envid};{seed}"
-model_file = f"models/{envid};{seed};{args.algo}"
-envid: str = EXPERIMENTS[expid]['envid']
-config: str = envid.split('_')[1]
-target_pos = CONFIGS[config]['target']
-target_pos = np.array([*target_pos, 0.015])
+envid = EXPERIMENTS[expid]['envid']
+suffix = ""
+if args.suffix is not None:
+    suffix = args.suffix
+else:
+    suffix = ""
+    if args.sjrs:
+        suffix += ";SJRS"
+
+model_file = f"models/{envid};{seed};{args.algo}{suffix}"
+
+config = envid.split('_')[1]
+target_pos = np.array([*CONFIGS[config]['target'], 0.015])
+
 train_env = gym.make(envid)
-
 print(f"Observation: {train_env.observation_space}")
 print(f"Action: {train_env.action_space}")
 print(f"MODEL FILE: {model_file}.pth")
 
-# load or create model
-if os.path.isfile(model_file+".pth"):
-    model = model_class.load(model_file+".pth", train_env)
+if os.path.isfile(model_file + ".pth"):
+    model = model_class.load(model_file + ".pth", train_env)
     if issubclass(model_class, OffPolicyAlgorithm):
-        model.load_replay_buffer(model_file+"_rb.pth")
-    print(f"Model loaded from file timesteps: {model.num_timesteps}")
-    new_model = False
+        rb_path = model_file + "_rb.pth"
+        if os.path.isfile(rb_path):
+            model.load_replay_buffer(rb_path)
+    print(f"Loaded timesteps: {model.num_timesteps}")
 else:
-    raise Exception("Model not found")
-     
-# Play the learned policy
-render_mode="human"
-test_env = gym.make(envid, render_mode=render_mode)
-trajectory = []
-errors = []
-torques = []
-accelerations = []
-observation, info = test_env.reset(seed=seed)
+    raise FileNotFoundError(f"Model not found: {model_file}.pth")
 
-for i in range(200):
-    action, _ = model.predict(observation, deterministic=True)
-    observation, reward, terminated, truncated, info = test_env.step(action)
-    ee_pos = test_env.unwrapped.data.body("fingertip").xpos[0:test_env.unwrapped.ndim]
-    ee_pos = np.array([*ee_pos, 0.015])
-    trajectory.append(ee_pos)
-    error = np.linalg.norm(ee_pos - target_pos)
-    errors.append(error)
-    torques.append(action)
-    accelerations.append(test_env.unwrapped.data.qacc[:3])
-    print(f"ACCELERATION: {test_env.unwrapped.data.qacc[:3]}")
-    print(f"TORQUE: {action}\n") 
-    
-    if render_mode=="human":
+render_mode = "human"
+env = gym.make(envid, render_mode=render_mode)
+dt = float(getattr(env.unwrapped, "dt"))
+print(f"dt (s): {dt:.6f}")
+
+# sizes
+n_act = env.unwrapped.model.nu
+n_dof = env.unwrapped.model.nv
+assert n_act <= n_dof, "Assuming 1 actuator per joint subset"
+
+trajectory, errors = [], []
+U, TAU, QVEL, TAU_NORM = [], [], [], []  # <-- added TAU_NORM
+obs, info = env.reset(seed=seed)
+
+for t in range(200):
+    action, _ = model.predict(obs, deterministic=True)
+    obs, reward, terminated, truncated, info = env.step(action)
+
+    # logging
+    u   = np.asarray(action, dtype=np.float64).copy()              # (n_act,)
+    tau = np.asarray(env.unwrapped.data.qfrc_actuator, np.float64)[:n_act].copy()
+
+    U.append(u)
+    TAU.append(tau)
+    # -----------------------------------------
+
+    ee = env.unwrapped.data.body("fingertip").xpos[0:env.unwrapped.ndim]
+    ee = np.array([*ee, 0.015])
+    trajectory.append(ee)
+    errors.append(np.linalg.norm(ee - target_pos))
+
+    if t < 60 or (t % 10 == 0):
+        print(f"u(ctrl): {u} | tau: {tau} | qacc: {env.unwrapped.data.qacc[:n_act]}")
+
+    if render_mode == "human":
         for p in trajectory:
-            test_env.unwrapped.mujoco_renderer.viewer.add_marker(pos=p, size=0.005, label = "", rgba=[1, 1, 0, 1], type=2)
-        test_env.render()
-        time.sleep(0.1)
+            env.unwrapped.mujoco_renderer.viewer.add_marker(
+                pos=p, size=0.005, label="", rgba=[1,1,0,1], type=2)
+        env.render()
+        time.sleep(0.05)
 
     if terminated or truncated:
         print(info)
         break
-    
-accelerations = np.array(accelerations)
-torques = np.array(torques)
-print(accelerations.shape)
 
-# Plot the torques
-U = np.array(torques)
+U        = np.vstack(U)        # (T, n_act)
+TAU      = np.vstack(TAU)      # (T, n_act)
 
+# --------- metrics ----------
+E_tau = float(np.mean(np.sum(TAU**2, axis=1)) * dt)          # physical effort per-step mean (dt*||tau||^2)
+
+
+print(f"shapes U,TAU: {U.shape} {TAU.shape}")
+
+# ---- Energy metrics (episode) ----
+T = U.shape[0]
+dt_used = float(locals().get("dt", getattr(env.unwrapped, "dt", 0.01)))
+
+E_paper_tot = float(np.sum(np.sum(U**2, axis=1)) * dt_used)
+E_paper_mean = E_paper_tot / max(T, 1)
+
+print(f"PAPER ENERGY (Σ dt·||u||²):             {E_paper_tot:.6f}  (per-step mean: {E_paper_mean:.6f})")
+print(f"ACC ERROR: {np.mean(errors)}")
+
+# --------- plots ----------
 plt.figure()
 plt.plot(U)
-plt.title("Torques over time")
+plt.title(f"{args.model_name} | Mean Error={np.mean(errors):.3f}  Energy={E_paper_tot:.3f}")
+plt.xlabel("Time step"); plt.ylabel("u ([-1,1])")
+plt.ylim(-1, 1)
+plt.legend([f"Joint {i+1}" for i in range(U.shape[1])])
+plt.savefig(f"images/{expid}_torques.png", dpi=300, bbox_inches="tight")
 
-plt.xlabel("Time step", fontdict={'size': 20})
-plt.xticks(fontsize=15)
-
-plt.ylabel("Torque [Nm]", fontdict={'size': 20})
-plt.yticks(fontsize=15)
-
-plt.legend([f"Joint {i+1}" for i in range(U.shape[1])], fontsize=13, loc='upper right')
-
-plt.savefig(f"images/{expid}_rl.png", dpi=1000, bbox_inches='tight')
-# plt.show()
-
-print(f"ERRORS: {np.array(errors)}")
-print(f"ACC ERROR: {np.sum(errors) / len(errors)}")
-print(f"SUMMED TORQUES: {np.sum(np.sum(torques ** 2, axis=1)) * 0.01}")
-test_env.close()
-
+env.close()

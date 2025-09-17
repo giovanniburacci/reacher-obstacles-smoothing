@@ -21,7 +21,7 @@ EXPERIMENTS = {
  },
  '3b': {
     'envid': "Reacher3-v6_FTO2_rhV",
-    'train_steps': 3.5e5,
+    'train_steps': 4e5,
  },
  '4a': {
       'envid': "Reacher3-v6_FTO3",
@@ -29,7 +29,7 @@ EXPERIMENTS = {
    },
  '4b': {
       'envid': "Reacher3-v6_FTO3_rhV",
-      'train_steps': 5e5,
+      'train_steps': 3.5e5,
    },
   '5a': {
       'envid': "Reacher3-v6_FTO3b",

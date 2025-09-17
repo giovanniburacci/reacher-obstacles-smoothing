@@ -1,20 +1,13 @@
 __credits__ = ["Kallinteris-Andreas"]
 
 import math,sys,time
-
-from queue import Queue
 from typing import Any, Dict, Optional, Tuple, Union
 from inspect import getsourcefile
 from os.path import abspath,dirname
-
 import numpy as np
-import cv2
-
 from gymnasium import utils
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
-
-import mujoco
 
 
 DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0, "distance": 1.5, }
@@ -22,48 +15,48 @@ DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0, "distance": 1.5, }
 
 def euler_to_quaternion(roll, pitch, yaw):
 
-  qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
-  qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
-  qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
-  qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+    qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+    qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
+    qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
+    qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
 
-  return np.array([qx, qy, qz, qw])
-        
+    return np.array([qx, qy, qz, qw])
+
 
 MODEL_OBSTACLES = 3
 
 CONFIGS = {
-  'FT': {
-    'target': (-0.075, 0.185),
-  },
-  'FTO1': {
-    'target': (-0.075, -0.185),
-    'obstacles': [(0.12, -0.15)],
-  },
-  'FTO2': {
-    'target': (-0.075, 0.185),
-    'obstacles': [(0.12,0.17),(0.0,-0.1)]
-  },
-  'FTO3': {
-    'target': (-0.15, 0.17),
-    'obstacles': [(0.0,0.2),(-0.02,0.1),(0.12,0.17)]
-  },
-  'FTO3b' : {
-    'target': (-0.1, 0.1),
-    'obstacles': [(0.12,0.2),(0,0.1),(-0.25,0.1)]
-  },
+    'FT': {
+        'target': (-0.075, 0.185),
+    },
+    'FTO1': {
+        'target': (-0.075, -0.185),
+        'obstacles': [(0.12, -0.15)],
+    },
+    'FTO2': {
+        'target': (-0.075, 0.185),
+        'obstacles': [(0.12,0.17),(0.0,-0.1)]
+    },
+    'FTO3': {
+        'target': (-0.15, 0.17),
+        'obstacles': [(0.0,0.2),(-0.02,0.1),(0.12,0.17)]
+    },
+    'FTO3b' : {
+        'target': (-0.1, 0.1),
+        'obstacles': [(0.12,0.2),(0,0.1),(-0.25,0.1)]
+    },
 }
 
 class EnvConfig():
 
     def __init__(self,
-            njoints=2,
-            config_str = 'FT',
-        ):
-    
+                 njoints=2,
+                 config_str = 'FT',
+                 ):
+
         self.njoints = njoints
         self.config_str = config_str
-        
+
         self.model_obstacles = MODEL_OBSTACLES
         self.uobstacle = 'U' in self.config_str
 
@@ -76,7 +69,7 @@ class EnvConfig():
             dj = min(3,self.njoints)
             g = self.np_random.uniform(low=-0.1*dj, high=0.1*dj, size=2)
             if np.linalg.norm(g) < 0.1*self.njoints and \
-               np.linalg.norm(g) > 0.1:
+                    np.linalg.norm(g) > 0.1:
                 break
         return g
 
@@ -86,10 +79,10 @@ class EnvConfig():
             dj = min(3,self.njoints)
             opos = self.np_random.uniform(low=-0.1*dj, high=0.1*dj, size=2)
             if np.linalg.norm(opos) > 0.15 and \
-                np.linalg.norm(opos) < 0.1*dj and \
-                (opos[0]<0 or abs(opos[1])>0.12) and \
-                np.linalg.norm(opos-self.target) > 0.15 and \
-                np.linalg.norm(opos-self.target) < d*0.15:
+                    np.linalg.norm(opos) < 0.1*dj and \
+                    (opos[0]<0 or abs(opos[1])>0.12) and \
+                    np.linalg.norm(opos-self.target) > 0.15 and \
+                    np.linalg.norm(opos-self.target) < d*0.15:
                 break
         return opos
 
@@ -100,14 +93,14 @@ class EnvConfig():
         self.obstacles = [None] * self.model_obstacles
         safe_x = 0.10*self.njoints + 0.05
         safe_y = 0.10*self.njoints + 0.05
-        
+
         for jo in range(self.model_obstacles):
             self.obstacles[jo] = np.array([safe_x-jo*0.05, safe_y])
-    
+
         if self.config_str in CONFIGS.keys():
             cfg = CONFIGS[self.config_str]
             self.target = cfg['target']
-            
+
             self.nobstacles = 0
             if 'obstacles' in CONFIGS[self.config_str].keys():
                 self.nobstacles = len(CONFIGS[self.config_str]['obstacles'])
@@ -117,26 +110,26 @@ class EnvConfig():
         self.uobstacle_pose = {
             'pos': np.array([-0.075, 0.25, 0.01]),
             'quat': euler_to_quaternion(-math.pi/2, 0, 0)  # don't know why yaw is the first param ???
-        }    
+        }
 
 
     def old_function(self):
-    
+
         # target
         if self.fixed_target == 4:
             self.target = self.np_random.choice([np.array([0.1, 0.15]),
-                np.array([0, 0.15]),np.array([0.1, -0.15]),np.array([-0.1, -0.15])])
+                                                 np.array([0, 0.15]),np.array([0.1, -0.15]),np.array([-0.1, -0.15])])
         elif self.fixed_target:
-            self.target = np.array([-0.075, 0.175])            
+            self.target = np.array([-0.075, 0.175])
         else:
-            self.target = self.random_target()    
+            self.target = self.random_target()
             # print(f"Random target: {self.target}")
 
         # obstacles
         self.obstacles = [None] * self.model_obstacles
         safe_x = 0.10*self.njoints + 0.05
         safe_y = 0.10*self.njoints + 0.05
-        
+
         for jo in range(self.model_obstacles):
             self.obstacles[jo] = np.array([safe_x-jo*0.05, safe_y])
 
@@ -173,7 +166,7 @@ class EnvConfig():
                         self.obstacles[1] = np.array([0,-0.1])
 
             elif self.nobstacles==1:
-                    
+
                 if self.uobstacle:
                     if self.obstacle_config == 'b':
                         self.obstacles[0] = np.array([-0.17,-0.16])
@@ -212,7 +205,7 @@ class EnvConfig():
     def get_config(self):
         return self.target, self.obstacles, self.uobstacle_pose
 
-        
+
     def reset(self, seed):
         if self.np_random == None or seed != self.seed:
             self.seed = seed
@@ -221,7 +214,7 @@ class EnvConfig():
             self.read_config()
         else:
             self.old_function()
-            
+
         return self.get_config()
 
 
@@ -361,19 +354,19 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
     }
 
     def __init__(
-        self,
-        xml_file: str = "reacher.xml",
-        frame_skip: int = 1,
-        default_camera_config: Dict[str, Union[float, int]] = DEFAULT_CAMERA_CONFIG,
-        njoints = 2,
-        ndim = 2,
-        config_str = 'FT',        
-#        fixed_target = False,
-#        fixed_obstacles = False,
-#        nobstacles = 0,
-#        obstacle_config = ' ',
-#        uobstacle = False,
-        **kwargs,
+            self,
+            xml_file: str = "reacher.xml",
+            frame_skip: int = 1,
+            default_camera_config: Dict[str, Union[float, int]] = DEFAULT_CAMERA_CONFIG,
+            njoints = 2,
+            ndim = 2,
+            config_str = 'FT',
+            #        fixed_target = False,
+            #        fixed_obstacles = False,
+            #        nobstacles = 0,
+            #        obstacle_config = ' ',
+            #        uobstacle = False,
+            **kwargs,
     ):
 
         self.njoints = njoints
@@ -385,7 +378,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
             xml_file = "reacher3.xml"
         if self.njoints == 5:
             xml_file = "marrtino.xml"
-        
+
         xml_file_abs = dd+"/assets/"+xml_file
 
         #print(xml_file_abs)
@@ -426,7 +419,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
             #obstacle_config = self.obstacle_config,
             #uobstacle = self.uobstacle,
         )
-            
+
         MujocoEnv.__init__(
             self,
             xml_file_abs,
@@ -447,19 +440,19 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
             ],
             "render_fps": int(np.round(1.0 / self.dt)),
         }
-        
+
         if self.render_mode == "human":
             # hide menu
             self.mujoco_renderer._get_viewer("human")._hide_menu = True
-            
-    
+
+
     # reset override not needed in gym v. 1.0.0, use:
     # self.seed = self.np_random_seed
     def reset(
-        self,
-        *,
-        seed: Optional[int] = None,
-        options: Optional[dict] = None,
+            self,
+            *,
+            seed: Optional[int] = None,
+            options: Optional[dict] = None,
     ):
         self.seed = seed
         return super().reset(seed=seed)
@@ -519,20 +512,20 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
 
 
     def step(self, action):
-    
+
         #theta = self.data.qpos.flatten()[:self.njoints] # joints pos
         #jvel = self.data.qvel.flatten()[:self.njoints]  # joints vel
 
         self.do_simulation(action, self.frame_skip)
 
         termination = False
-        
+
         self.hit = 0
         if self.detect_contact():
             self.hit = 1
             self.episode_hit = True
             termination = True
-            
+
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
         info = reward_info
@@ -565,19 +558,19 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
                 self.data.body("target").xpos[:2],         # target 2D position
             ]
         )
-        
+
         if self.nobstacles>=1:
-            obs = np.concatenate([obs, 
-                self.data.body("obstacle1").xpos[:2],
-            ])
+            obs = np.concatenate([obs,
+                                  self.data.body("obstacle1").xpos[:2],
+                                  ])
         if self.nobstacles>=2:
-            obs = np.concatenate([obs, 
-                self.data.body("obstacle2").xpos[:2],
-            ])
+            obs = np.concatenate([obs,
+                                  self.data.body("obstacle2").xpos[:2],
+                                  ])
         if self.nobstacles>=3:
-            obs = np.concatenate([obs, 
-                self.data.body("obstacle3").xpos[:2],
-            ])
+            obs = np.concatenate([obs,
+                                  self.data.body("obstacle3").xpos[:2],
+                                  ])
 
 
         return obs
@@ -585,7 +578,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
 
     def _get_rew(self, action):
         vec = self.get_body_com("fingertip") - self.get_body_com("target")  # diff to target
-        vec_norm = np.linalg.norm(vec) 
+        vec_norm = np.linalg.norm(vec)
 
         jvel = self.data.qvel.flatten()[:self.njoints]  # joints vel
         jvel_norm = np.linalg.norm(jvel) # joints vel norm
@@ -610,7 +603,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
             "reward_goal": reward_goal,
             "reward_hit": reward_hit,
         }
-        
+
         return reward, reward_info
 
 
@@ -626,7 +619,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
                 # print(f" -- contact {geom1name} {geom2name}")
                 r = True
         return r
-        
+
 
 # env registration 
 
@@ -647,13 +640,13 @@ def env_register(idreg, max_episode_steps=50):
         ndim = 3
 
     register(id=idreg,
-        entry_point="reacher_obstacles.envs.reacher_v6:reacher_v6",
-        max_episode_steps=max_episode_steps,
-        kwargs =  { 
-                    'njoints': nj,
-                    'ndim': ndim,
-                    'config_str': cfstr,
-                     } )
+             entry_point="reacher_obstacles.envs.reacher_v6:reacher_v6",
+             max_episode_steps=max_episode_steps,
+             kwargs =  {
+                 'njoints': nj,
+                 'ndim': ndim,
+                 'config_str': cfstr,
+             } )
 
 
 
