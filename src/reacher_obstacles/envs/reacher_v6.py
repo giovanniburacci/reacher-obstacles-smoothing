@@ -620,6 +620,33 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
                 r = True
         return r
 
+    def set_target(self, pos_xyz):
+        """
+        Update the active target used by shaping/obs and move the target body in MuJoCo.
+        Expects a 3D position [x, y, z]; shaping uses x,y.
+        """
+        import numpy as np
+        pos = np.asarray(pos_xyz, float).reshape(3)
+
+        # 1) update the 2D target used by reward/obs
+        self.target = pos[:2]
+
+        # 2) move the two slide DOFs that place the 'target' body
+        qpos = self.data.qpos.copy().flatten()
+        pobs = - self.model_obstacles * 2
+        pgoal = pobs - 2
+        qpos[pgoal:pgoal+2] = self.target
+        self.set_state(qpos, self.data.qvel.copy().flatten())
+
+        # 3) best-effort: if a site named 'target' exists, move it for visualization
+        try:
+            sid = self.model.site("target").id
+            self.model.site_pos[sid] = pos
+            self.sim.forward()
+        except Exception:
+            pass
+
+
 
 # env registration 
 
@@ -628,7 +655,7 @@ from gymnasium.envs.registration import register
 def reacher_v6(**args):
     return ReacherEnv(**args)
 
-def env_register(idreg, max_episode_steps=50):
+def env_register(idreg, max_episode_steps=100):
     vid = idreg.split('_')
     cfstr = vid[1]
     nj = 2

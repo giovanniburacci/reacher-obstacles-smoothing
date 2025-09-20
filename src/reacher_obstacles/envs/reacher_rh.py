@@ -140,7 +140,7 @@ def reacher_rh(**args):
     return env
 
 
-def env_register(idreg, max_episode_steps=50, time_beta=1.0, absorb_goal=False):
+def env_register(idreg, max_episode_steps=100, time_beta=1.0, absorb_goal=False):
     v = idreg.split('_')
     envid = v[0] + "_" + v[1]
     rs = (v[2] == 'rsV')
