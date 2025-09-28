@@ -23,65 +23,35 @@ class RewardHeuristic(Wrapper):
         self.time_beta = float(time_beta)
         self.absorb_goal = bool(absorb_goal)
 
+    def _rebuild_goal_map(self):
+        self.gmap = np.zeros((self.bins, self.bins)) - 1
+        # obstacles
+        for jo in range(self.env.unwrapped.nobstacles):
+            r, c = self._to_r_c(self.unwrapped.obstacles[jo])
+            self.gmap[r, c] = 2 * self.bins
+        # origin
+        r0, c0 = self._to_r_c(np.array([0, 0]))
+        self.gmap[r0, c0] = 2 * self.bins
+        # current target (set via RM routing)
+        tr, tc = self._to_r_c(self.env.unwrapped.target)
+        assert self.gmap[tr, tc] == -1, "Target cell occupied by obstacle"
+        self.gmap[tr, tc] = 0
+        self._last_goal = np.array(self.env.unwrapped.target, dtype=float)
 
     def _to_r_c(self, pos):
         # continuous x,y to discrete r,c
         c = int((pos[0] + 0.45) / 0.1)
         r = int((0.45 - pos[1]) / 0.1)
         return r, c
+
     # ---------------------------
 
     def reset(self, *, seed=None, options=None):
         obs, info = super().reset(seed=seed)
-
-        # compute goal map
-        self.gmap = np.zeros((self.bins, self.bins)) - 1  # reset to -1
-
-        # obstacles
-        for jo in range(self.env.unwrapped.nobstacles):
-            obsr, obsc = self._to_r_c(self.unwrapped.obstacles[jo])
-            self.gmap[obsr, obsc] = 2 * self.bins
-
-        # zero position
-        zr, zc = self._to_r_c(np.array([0, 0]))
-        self.gmap[zr, zc] = 2 * self.bins
-
-        # optional U-obstacle map (unchanged)
-        if self.env.unwrapped.uobstacle:
-            uobstmap = np.array(
-                [[0, 0, 0, 0, 0, 0, 0, 0, 0],
-                 [0, 0, 18, 18, 18, 0, 0, 0, 0],
-                 [0, 0, 18, 0, 18, 0, 0, 0, 0],
-                 [0, 0, 18, 0, 18, 0, 0, 0, 0],
-                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
-                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
-                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
-                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
-                 [0, 0, 0, 0, 0, 0, 0, 0, 0]]
-            )
-            self.gmap = self.gmap + uobstmap
-
-        tr, tc = self._to_r_c(self.env.unwrapped.target)
-        assert self.gmap[tr, tc] == -1, "ERROR - reset model - target cell occupied by an obstacle!"
-        self.gmap[tr, tc] = 0  # goal cell to 0
-
-        # BFS fill with L1 distances
-        q = Queue(maxsize=self.bins**2)
-        q.put((tr, tc))
-        while not q.empty():
-            (r, c) = q.get()
-            v = self.gmap[r, c]
-            if r > 0 and self.gmap[r-1, c] == -1:
-                self.gmap[r-1, c] = v+1; q.put((r-1, c))
-            if r < self.bins-1 and self.gmap[r+1, c] == -1:
-                self.gmap[r+1, c] = v+1; q.put((r+1, c))
-            if c > 0 and self.gmap[r, c-1] == -1:
-                self.gmap[r, c-1] = v+1; q.put((r, c-1))
-            if c < self.bins-1 and self.gmap[r, c+1] == -1:
-                self.gmap[r, c+1] = v+1; q.put((r, c+1))
-
-        # reset potential to min value
-        self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins*2) - 1.0)
+        g = np.array(self.env.unwrapped.target, dtype=float)
+        print(f"[RH] reset goal -> {g.tolist()}", flush=True)
+        self._rebuild_goal_map()
+        self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
         return obs, info
 
     def reward_heuristic(self):
@@ -97,19 +67,37 @@ class RewardHeuristic(Wrapper):
         return float(rh), int(dvec)
 
     def step(self, action):
+        # snapshot current goal (what RH shapes toward this step)
+        if not hasattr(self, "_dbg_step"):
+            self._dbg_step = 0
+        self._dbg_step += 1
+
+        goal_before = np.array(self.env.unwrapped.target, dtype=float)
+
+        # proceed with env step (RM may route target AFTER this)
         observation, reward, term, trunc, info = super().step(action)
 
+        # AFTER step: see if RM routing changed the goal for the next step
+        goal_after = np.array(self.env.unwrapped.target, dtype=float)
+        if not np.allclose(goal_after, goal_before, atol=1e-9):
+            print(f"[RH] goal changed AFTER step: {goal_before.tolist()} -> {goal_after.tolist()} (t={self._dbg_step})", flush=True)
+            # the RM routed; rebuild internal map to the new goal
+            self._rebuild_goal_map()
+            # reset shaping baseline so potentials stay consistent
+            self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
+        elif (self._dbg_step % 50) == 0:
+            print(f"[RH] goal steady: {goal_after.tolist()} (t={self._dbg_step})", flush=True)
+
+        # --- existing reward edits ---
         # remove original shapers from base env
         reward -= info["reward_dist"]
         reward -= info["reward_ctrl"]
 
-        # RH value + principled time cost
+        # RH value + time cost
         rh, dvec = self.reward_heuristic()
         dt = float(getattr(self.env.unwrapped, "dt"))
         time_penalty = - self.time_beta * dt
-
         reward += time_penalty + rh
-        # reward += -1 + rh
 
         # lightweight near-goal shaping
         if dvec <= 3:
@@ -122,11 +110,9 @@ class RewardHeuristic(Wrapper):
             term = True
             info["done_reason"] = "goal_absorbing"
 
-        # log useful bits
-        info["time_penalty"] = time_penalty
-        info["reward_heuristic"] = rh
-        info["dt"] = getattr(self.env.unwrapped, "dt", None)
-
+        # print RH debug for eval/logging
+        info = dict(info or {})
+        info["rh_goal"] = goal_after.tolist()
         return observation, reward, term, trunc, info
 
 
@@ -140,7 +126,7 @@ def reacher_rh(**args):
     return env
 
 
-def env_register(idreg, max_episode_steps=100, time_beta=1.0, absorb_goal=False):
+def env_register(idreg, max_episode_steps=300, time_beta=1.0, absorb_goal=False):
     v = idreg.split('_')
     envid = v[0] + "_" + v[1]
     rs = (v[2] == 'rsV')
@@ -155,7 +141,6 @@ def env_register(idreg, max_episode_steps=100, time_beta=1.0, absorb_goal=False)
             'absorb_goal': absorb_goal,
         }
     )
-
 
 rew_list = ['rhV', 'rsV']
 

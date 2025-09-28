@@ -32,10 +32,23 @@ class RMWrapper(gym.Wrapper):
         self.observation_space = gym.spaces.Box(low=low, high=high, dtype=orig.dtype)
 
     def reset(self, **kwargs):
+        # 1) RM to u0
         self.rm.reset()
+
+        # 2) route the env target to the u0 waypoint before the inner reset,
+        #    so RH sees the correct goal during its own reset
+        if self.route_target:
+            self._maybe_route_target()
+
+        # 3) reset the inner env (RH will now rebuild its map around the routed goal).
         obs, info = self.env.reset(**kwargs)
-        self._maybe_route_target()
+
+        # 4) re-do routing in case env reset the original target
+        if self.route_target:
+            self._maybe_route_target()
+
         return self._augment_obs(obs), info
+
 
     def step(self, action):
         obs, r_env, terminated, truncated, info = self.env.step(action)
@@ -48,26 +61,46 @@ class RMWrapper(gym.Wrapper):
         _, r_rm = self.rm.step(sigma)
 
         # (visual only) route when RM state changes
+        routed_to = None
         if self.route_target and (self.rm.u != prev_u):   # <-- NEW
-            self._maybe_route_target()                     # <-- NEW
+                self._maybe_route_target()                     # <-- NEW
+                routed_to = self.u_to_wp.get(self.rm.u)
 
-        # strict CP baseline: ignore environment reward
+
+    # strict CP baseline: ignore environment reward
         if self.reward_mode == "replace":
             r_total = float(self.w_rm * r_rm)
         else:  # "add" = non-baseline variant that includes env reward too
             r_total = float(r_env + self.w_rm * r_rm)
 
-        # bookkeeping for logs
+        # compute distance to CURRENT waypoint (for logging/diagnostics)
+        wp_name = self.u_to_wp.get(self.rm.u) if hasattr(self, "u_to_wp") else None
+        wp_pos = self.labeller.waypoints.get(wp_name) if wp_name else None
+        try:
+            ee = self.env.unwrapped.data.body("fingertip").xpos[:self.env.unwrapped.ndim]
+            ee = np.array([*ee, 0.015], dtype=float)
+            dist_wp = float(np.linalg.norm(ee - np.asarray(wp_pos, float))) if wp_pos is not None else float("nan")
+        except Exception:
+            dist_wp = float("nan")
+
+        # store info for TB/debug
         info = dict(info or {})
-        info["env_reward"] = float(r_env)
-        info["rm_reward"] = float(r_rm)
-        info["rm_state"] = self.rm.u
-        info["sigma"] = list(sigma)
+        info["env_reward"]   = float(r_env)
+        info["rm_reward"]    = float(r_rm)
+        info["total_reward"] = float(r_total)
+        info["rm_state"]     = self.rm.u
+        info["sigma"]        = list(sigma)
+        info["wp_name"]      = wp_name
+        info["wp_pos"]       = (wp_pos.tolist() if isinstance(wp_pos, np.ndarray) else wp_pos)
+        info["dist_to_wp"]   = dist_wp
+        info["r_mode"]       = self.reward_mode
+        if routed_to is not None:
+            info["routed_to"] = routed_to  # only present on steps where we routed
 
         done = terminated or truncated or self.rm.is_terminal()
         return self._augment_obs(obs), r_total, done, truncated and not done, info
 
-    # ----- helpers
+    # helpers
     def _augment_obs(self, obs):
         onehot = np.zeros(self._onehot_len, dtype=self.observation_space.dtype)
         idx = self._state_index(self.rm.u)

@@ -1,15 +1,11 @@
-# rm_specs/seq_big_triangle_hit.yaml
 states:    [u0, u1, u2, uF, uX]   # uX = collision sink
 initial:   u0
 accepting: [uF, uX]               # terminate also on collision
 transitions:
-  - {src: u0, cond: near_G1, dst: u1, reward: 100}
-  - {src: u1, cond: near_G2, dst: u2, reward: 100}
-  - {src: u2, cond: near_G3, dst: uF, reward: 100}
-  # collision anywhere -> sink with penalty
-  - {src: u0, cond: hit, dst: uX, reward: -100}
-  - {src: u1, cond: hit, dst: uX, reward: -100}
-  - {src: u2, cond: hit, dst: uX, reward: -100}
-  - {src: u0, cond: "true", dst: u0, reward: -0.01 }
-  - {src: u1, cond: "true", dst: u1, reward: -0.01 }
-  - {src: u2, cond: "true", dst: u2, reward: -0.01 }
+  - {src: u0, cond: near_G2, dst: u1, reward: 1}
+  - {src: u1, cond: near_G1, dst: u2, reward: 3}
+  - {src: u2, cond: near_G3, dst: uF, reward: 10}
+  # collisions
+  - {src: u0, cond: hit, dst: uX, reward: -10}
+  - {src: u1, cond: hit, dst: uX, reward: -10}
+  - {src: u2, cond: hit, dst: uX, reward: -10}

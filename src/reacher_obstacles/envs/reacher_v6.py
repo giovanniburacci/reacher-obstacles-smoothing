@@ -655,7 +655,7 @@ from gymnasium.envs.registration import register
 def reacher_v6(**args):
     return ReacherEnv(**args)
 
-def env_register(idreg, max_episode_steps=100):
+def env_register(idreg, max_episode_steps=300):
     vid = idreg.split('_')
     cfstr = vid[1]
     nj = 2

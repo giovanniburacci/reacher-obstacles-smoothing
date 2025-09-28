@@ -50,6 +50,7 @@ parser.add_argument("--rm-route-target", action="store_true",
                     help="(Optional) route env target by RM state -> waypoint (visual only)")
 parser.add_argument("--rm-map", type=str, default=None,
                     help='JSON/YAML mapping from RM state to waypoint name, e.g. {"u1":"G1","u2":"G2","uF":"G3"}')
+parser.add_argument("--rm-reward-mode", choices=["add", "replace"], default="add")
 
 # ---------- Viewer cosmetics ----------
 parser.add_argument("--hide-builtin-target", action="store_true",
@@ -75,7 +76,7 @@ model_file = f"models/{envid};{seed};{args.algo}{suffix}"
 config_key = envid.split('_')[1]
 target_pos = np.array([*CONFIGS[config_key]['target'], 0.015])
 
-# ---------- helpers ----------
+# helpers
 def _draw_waypoints(env, wps: dict):
     """Draw labeled markers for each waypoint on every frame."""
     if not wps:
@@ -202,7 +203,7 @@ def _wrap_with_rm(env: gym.Env, envid: str):
         w_rm=0.0,  # neutral for eval
         route_target=bool(args.rm_route_target),
         waypoint_order=u_to_wp,
-        reward_mode="add",  # mirror baseline behavior
+        reward_mode=args.rm_reward_mode,  # mirror baseline behavior
     )
 
     return env
@@ -213,13 +214,13 @@ def make_eval_env(render_mode=None):
         env = _wrap_with_rm(env, envid)
     return env
 
-# ---------- build env that matches the model's observation space ----------
+# build env that matches the model's observation space
 eval_env = make_eval_env()
 print(f"Observation (eval env): {eval_env.observation_space}")
 print(f"Action (eval env):       {eval_env.action_space}")
 print(f"MODEL FILE:               {model_file}.pth")
 
-# ---------- load model WITH the matching env (fixes space mismatch) ----------
+#  load model WITH the matching env (fixes space mismatch)
 if os.path.isfile(model_file + ".pth"):
     model = model_class.load(model_file + ".pth", eval_env)
     if issubclass(model_class, OffPolicyAlgorithm):
@@ -251,9 +252,11 @@ errors_cfg = []   # error vs original CONFIGS target
 errors_rm  = []   # error vs current RM waypoint (new)
 _hidden_builtin = False
 
-for t in range(200):
+for t in range(300):
     action, _ = model.predict(obs, deterministic=True)
     obs, reward, terminated, truncated, info = env.step(action)
+    if info.get("routed_to") or info.get("rh_rebuilt_goal"):
+        print(f"[DBG] RM→ {info.get('wp_name')}  RMpos={info.get('wp_pos')}  RHgoal={info.get('rh_goal')}")
 
     # log actions
     u = np.asarray(action, dtype=np.float64).copy()
