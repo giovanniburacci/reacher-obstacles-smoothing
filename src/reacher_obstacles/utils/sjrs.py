@@ -32,6 +32,9 @@ class SJRSRewardWrapper(Wrapper):
         self._last_vec  = np.zeros(self.n_act, dtype=np.float64)
         self._last_dvec = np.zeros(self.n_act, dtype=np.float64)
 
+        self._sum = {}  # per-env accumulators: {i: dict(E=..., V=..., C=..., P=...)}
+
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self._last_tau[:] = 0.0
@@ -152,6 +155,7 @@ class SJRSCallback(BaseCallback):
         self.logger.dump(0)
 
     def _on_step(self) -> bool:
+        dones = self.locals.get("dones", [])
         for info in self._infos_list():
             if not info:
                 continue
@@ -176,6 +180,11 @@ class SJRSCallback(BaseCallback):
         self._flush()
 
     # ---------- helpers ----------
+
+    def _init_sum(self, i):
+        self._sum[i] = dict(E=0.0, V=0.0, C=0.0, P=0.0, steps=0)
+
+
     def _infos_list(self):
         infos = self.locals.get("infos", None)
         if infos is None:

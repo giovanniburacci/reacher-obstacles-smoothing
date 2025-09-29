@@ -38,14 +38,14 @@ class RMWrapper(gym.Wrapper):
         # 2) route the env target to the u0 waypoint before the inner reset,
         #    so RH sees the correct goal during its own reset
         if self.route_target:
-            self._maybe_route_target()
+            self._route_target()
 
         # 3) reset the inner env (RH will now rebuild its map around the routed goal).
         obs, info = self.env.reset(**kwargs)
 
         # 4) re-do routing in case env reset the original target
         if self.route_target:
-            self._maybe_route_target()
+            self._route_target()
 
         return self._augment_obs(obs), info
 
@@ -54,16 +54,18 @@ class RMWrapper(gym.Wrapper):
         obs, r_env, terminated, truncated, info = self.env.step(action)
 
         sigma = set(self.labeller.label(self.env))
-        if info.get("hit", 0):                       # <-- NEW: expose collisions to RM
+        # expose collisions to RM
+        if info.get("hit", 0):
             sigma.add("hit")
         sigma = list(sigma)
-        prev_u = self.rm.u                     # <-- NEW: remember RM state
+        # remember RM state
+        prev_u = self.rm.u
         _, r_rm = self.rm.step(sigma)
 
         # (visual only) route when RM state changes
         routed_to = None
         if self.route_target and (self.rm.u != prev_u):   # <-- NEW
-                self._maybe_route_target()                     # <-- NEW
+                self._route_target()                     # <-- NEW
                 routed_to = self.u_to_wp.get(self.rm.u)
 
 
@@ -113,7 +115,7 @@ class RMWrapper(gym.Wrapper):
         except ValueError:
             return 0
 
-    def _maybe_route_target(self):
+    def _route_target(self):
         """Optional: set env's current target to waypoint associated with current RM state."""
         if not self.route_target:
             return
@@ -125,19 +127,4 @@ class RMWrapper(gym.Wrapper):
         if pos is None:
             return
         un = self.env.unwrapped
-        for attr in ("set_target", "set_goal", "set_waypoint"):
-            if hasattr(un, attr):
-                try:
-                    getattr(un, attr)(pos)  # e.g., env.unwrapped.set_target(np.array([x,y,z]))
-                    print(f"[RM route] u={self.rm.u} -> {wp_name}")
-                    return
-                except Exception:
-                    pass
-        # fallback: common attribute names
-        for name in ("target", "goal", "waypoint"):
-            if hasattr(un, name):
-                try:
-                    setattr(un, name, pos)
-                    return
-                except Exception:
-                    pass
+        un.set_target(pos)
