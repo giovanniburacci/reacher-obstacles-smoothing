@@ -1,10 +1,14 @@
-from typing import Optional, Sequence, Dict, Any
+from typing import Optional, Dict, Any
 import numpy as np
 import gymnasium as gym
 from gymnasium import Wrapper
 from stable_baselines3.common.callbacks import BaseCallback
 
 
+# =========================
+#  SJRS reward wrapper
+#
+# =========================
 class SJRSRewardWrapper(Wrapper):
     def __init__(
             self,
@@ -12,226 +16,207 @@ class SJRSRewardWrapper(Wrapper):
             lambda_t: float = 0.0,
             lambda_a: float = 0.0,
             lambda_c: float = 0.0,
-            sjrs_mode: str = "torque",            # "torque" | "action"
+            sjrs_mode: str = "torque",  # "torque" | "action"
     ):
         super().__init__(env)
         self.lambda_t = float(lambda_t)
         self.lambda_a = float(lambda_a)
         self.lambda_c = float(lambda_c)
-        assert sjrs_mode in ("torque", "action"), "invalid sjrs_mode"
-        self.sjrs_mode = sjrs_mode
-        # ---------------
+        self.sjrs_mode = str(sjrs_mode)
 
-        assert hasattr(self.env.action_space, "shape") and self.env.action_space.shape is not None
-        self.n_act = int(self.env.action_space.shape[0])
+        # cache actuator count
+        self.n_act = int(getattr(env.unwrapped.model, "nu", 0)) or None
 
-        # existing state
-        self._last_tau = np.zeros(self.n_act, dtype=np.float64)
-        self._last_dtau = np.zeros(self.n_act, dtype=np.float64)
-        # state for selected vector (τ or u)
-        self._last_vec  = np.zeros(self.n_act, dtype=np.float64)
-        self._last_dvec = np.zeros(self.n_act, dtype=np.float64)
+        # histories (persist across steps; reset in reset())
+        self._last_vec: Optional[np.ndarray] = None
+        self._last_dvec: Optional[np.ndarray] = None
+        self._last_tau: Optional[np.ndarray] = None
+        self._last_dtau: Optional[np.ndarray] = None
 
-        self._sum = {}  # per-env accumulators: {i: dict(E=..., V=..., C=..., P=...)}
+    # ---------- helpers ----------
+    def _read_tau(self) -> np.ndarray:
+        tau = np.asarray(self.env.unwrapped.data.qfrc_actuator, dtype=np.float64)
+        return tau[: self.n_act] if self.n_act is not None else tau
 
-
+    # ---------- gym API ----------
     def reset(self, **kwargs):
+        # clear history
+        self._last_vec = None
+        self._last_dvec = None
+        self._last_tau = None
+        self._last_dtau = None
         obs, info = self.env.reset(**kwargs)
-        self._last_tau[:] = 0.0
-        self._last_dtau[:] = 0.0
-        self._last_vec[:]  = 0.0
-        self._last_dvec[:] = 0.0
-        # -----------
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
-        # always read physical torques for reference
-        tau = np.asarray(self.env.unwrapped.data.qfrc_actuator, dtype=np.float64)[:self.n_act]
-        dtau = tau - self._last_tau
-        d2tau = dtau - self._last_dtau
+        # --- reference torques (for sanity only; not used for penalty when mode="action") ---
+        tau = self._read_tau()
+        if self._last_tau is None:
+            dtau = np.zeros_like(tau)
+            d2tau = np.zeros_like(tau)
+        else:
+            dtau = tau - self._last_tau
+            d2tau = dtau - (self._last_dtau if self._last_dtau is not None else 0.0)
 
-        # choose the signal SJRS actually penalizes
+        # --- choose the penalized signal vec ---
         if self.sjrs_mode == "torque":
-            vec = tau
-        elif self.sjrs_mode == "action":
-            vec = np.asarray(action, dtype=np.float64)
+            vec = tau.astype(np.float64, copy=True)
+        else:  # "action"
+            vec = np.asarray(action, dtype=np.float64).copy()
 
-        dvec  = vec - self._last_vec
-        d2vec = dvec - self._last_dvec
+        # --- first & second differences (use prior history; update AFTER logging) ---
+        if self._last_vec is None:
+            dvec = np.zeros_like(vec)
+            d2vec = np.zeros_like(vec)
+        else:
+            dvec = vec - self._last_vec
+            d2vec = dvec - (self._last_dvec if self._last_dvec is not None else 0.0)
 
-        # raw (λ-independent) terms for the chosen signal
-        cost_a = float(np.dot(vec,  vec))     # magnitude
-        cost_t = float(np.dot(dvec, dvec))    # temporal (Δ)
-        cost_c = float(np.dot(d2vec, d2vec))  # curvature (Δ²)
+        # --- RAW components (λ-independent) ---
+        E_step = float(np.dot(vec, vec))        # magnitude
+        V_step = float(np.dot(dvec, dvec))      # temporal (Δ)
+        C_step = float(np.dot(d2vec, d2vec))    # curvature (Δ²)
 
-        # penalty that impacts reward
-        penalty = self.lambda_a*cost_a + self.lambda_t*cost_t + self.lambda_c*cost_c
-        reward -= penalty
-        # ---------------------------------------------------------
+        # --- penalty (unchanged) & reward edit ---
+        penalty_step = (self.lambda_a * E_step
+                        + self.lambda_t * V_step
+                        + self.lambda_c * C_step)
+        reward = float(reward) - float(penalty_step)
 
-        # logging
-        sjrs_info = info.setdefault("sjrs", {})
-        sjrs_info.update({
-            # which signal is used (for TB)
-            "mode": {"torque":0, "action":1}[self.sjrs_mode],
-
-            # λ-weighted (affect reward)
-            "magnitude": self.lambda_a*cost_a,
-            "temporal":  self.lambda_t*cost_t,
-            "curvature": self.lambda_c*cost_c,
-            "penalty":   penalty,
-
-            # raw wrt chosen signal
-            "magnitude_raw": cost_a,
-            "temporal_raw":  cost_t,
-            "curvature_raw": cost_c,
-
-            # reference (physical torque) norms stay available
-            "tau_norm":  float(np.linalg.norm(tau)),
-            "dtau_norm": float(np.linalg.norm(dtau)),
-            "d2tau_norm":float(np.linalg.norm(d2tau)),
-
-            # λ’s for visibility
-            "lambda_t": float(self.lambda_t),
+        # --- clean nested logging for TensorBoard ---
+        s: Dict[str, Any] = {
+            "mode": self.sjrs_mode,
+            # per-step raw components (use these to tune λ)
+            "E_step": E_step,
+            "V_step": V_step,
+            "C_step": C_step,
+            "penalty_step": float(penalty_step),
+            # tiny norms of the chosen signal for sanity
+            "vec_norm": float(np.linalg.norm(vec)),
+            "dvec_norm": float(np.linalg.norm(dvec)),
+            "d2vec_norm": float(np.linalg.norm(d2vec)),
+            # lambdas (so TB records what was used)
             "lambda_a": float(self.lambda_a),
+            "lambda_t": float(self.lambda_t),
             "lambda_c": float(self.lambda_c),
-
             "active": 1.0,
-        })
+        }
 
-        # legacy flat keys
-        info["sjrs_temporal"] = float(np.dot(dtau, dtau))   # still the τ-based Δ term
-        info["sjrs_magnitude"] = float(np.dot(tau, tau))    # τ-based magnitude
-        info["sjrs_curvature"] = float(np.dot(d2tau, d2tau))# τ-based Δ²
-        info["sjrs_penalty"] = penalty
+        # Backwards-compatible aliases (keep existing callback working)
+        s["magnitude_raw"] = s["E_step"]
+        s["temporal_raw"] = s["V_step"]
+        s["curvature_raw"] = s["C_step"]
+        s["penalty"] = s["penalty_step"]
 
-        # --- state updates ---
-        self._last_dtau = dtau
-        self._last_tau  = tau
+        info = dict(info or {})
+        info["sjrs"] = s  # single source of truth
+
+        # --- update histories (after computing deltas) ---
+        self._last_vec = vec
         self._last_dvec = dvec
-        self._last_vec  = vec
+        self._last_tau = tau
+        self._last_dtau = dtau
 
         return obs, reward, terminated, truncated, info
 
 
+# =========================
+#  TensorBoard callback
+#  (episode sums + interval stats for E/V/C)
+# =========================
+from stable_baselines3.common.callbacks import BaseCallback
+import numpy as np
+
 class SJRSCallback(BaseCallback):
     """
-    SJRS logger
+    Logs:
+      Per-episode: sjrs/E_sum, V_sum, C_sum, penalty_sum, steps_ep
+      Interval   : sjrs/E_step_mean, V_step_mean, C_step_mean,
+                   sjrs/E_step_p95,  V_step_p95,  C_step_p95,
+                   sjrs/penalty_step_mean
+      Lambdas    : sjrs/lambda_a_mean, lambda_t_mean, lambda_c_mean
+      Heartbeat  : sjrs/timesteps, sjrs/alive (1)
     """
-    def __init__(self, interval: int = 500, prefix: str = "sjrs", verbose: int = 0):
-        super().__init__(verbose=verbose)
-        self.interval = int(interval)
+    def __init__(self, prefix: str = "sjrs", interval: int = 1000, verbose: int = 0):
+        super().__init__(verbose)
         self.prefix = prefix
-
-        # keys we expect to log
-        self.keys = [
-            # λ-weighted terms (impact reward)
-            "temporal", "magnitude", "curvature", "penalty",
-            # raw diagnostics (no λ)
-            "temporal_raw", "magnitude_raw", "curvature_raw",
-            # norms & lambdas
-            "tau_norm", "dtau_norm", "d2tau_norm",
-            "lambda_t", "lambda_a", "lambda_c",
-            # misc
-            "active",
-            "penalty"
-        ]
-        self.buf: Dict[str, list] = {k: [] for k in self.keys}
-
-        # Mapping from legacy flat keys to canonical names
-        self._legacy_map = {
-            "sjrs_temporal": "temporal_raw",
-            "sjrs_magnitude": "magnitude_raw",
-            "sjrs_curvature": "curvature_raw",
-            "sjrs_penalty": "penalty",
+        self.interval = int(interval)
+        self._sum = {}  # per-env episode accumulators
+        self._buf = {
+            "E_step": [], "V_step": [], "C_step": [], "penalty_step": [],
+            "lambda_a": [], "lambda_t": [], "lambda_c": [], "active": [],
         }
 
-    # ---------- SB3 hooks ----------
-    def _on_training_start(self) -> None:
-        # heartbeat
-        self.logger.record(f"{self.prefix}/alive", 1.0)
-        self.logger.dump(0)
-
-    def _on_step(self) -> bool:
-        dones = self.locals.get("dones", [])
-        for info in self._infos_list():
-            if not info:
-                continue
-
-            # prefer nested dict produced by our wrapper
-            c = info.get(self.prefix, None)
-            if isinstance(c, dict):
-                self._capture_from_dict(c)
-
-            # also capture legacy flat keys if present
-            for flat, canon in self._legacy_map.items():
-                v = info.get(flat, None)
-                if v is not None:
-                    self._append(canon, v)
-
-        # periodic emit
-        if self.interval > 0 and (self.num_timesteps % self.interval == 0):
-            self._flush()
-        return True
-
-    def _on_rollout_end(self) -> None:
-        self._flush()
-
-    # ---------- helpers ----------
-
-    def _init_sum(self, i):
+    def _init_sum(self, i: int):
         self._sum[i] = dict(E=0.0, V=0.0, C=0.0, P=0.0, steps=0)
 
-
-    def _infos_list(self):
-        infos = self.locals.get("infos", None)
-        if infos is None:
-            return []
-        # SubprocVecEnv -> list[dict], DummyVecEnv -> dict
-        return infos if isinstance(infos, (list, tuple)) else [infos]
-
-    def _capture_from_dict(self, d: Dict[str, Any]) -> None:
-        for k in self.keys:
-            v = d.get(k, None)
-            if v is not None:
-                self._append(k, v)
-
-        # accept prefixed keys too (e.g., 'sjrs_temporal_raw')
-        for k in list(self.keys):
-            pref = f"{self.prefix}_{k}"
-            if pref in d:
-                self._append(k, d[pref])
-
-    def _append(self, key: str, value: Any) -> None:
-        try:
-            self.buf[key].append(float(value))
-        except Exception:
-            pass
-
-    def _flush(self) -> None:
-        any_logged = False
+    def _record_interval(self):
         # means
-        for k, vals in self.buf.items():
-            if not vals:
+        for k in ("E_step", "V_step", "C_step", "penalty_step",
+                  "lambda_a", "lambda_t", "lambda_c", "active"):
+            if self._buf[k]:
+                self.logger.record(f"{self.prefix}/{k}_mean", float(np.mean(self._buf[k])))
+        # p95 for raw components
+        for k in ("E_step", "V_step", "C_step"):
+            if self._buf[k]:
+                self.logger.record(f"{self.prefix}/{k}_p95", float(np.percentile(self._buf[k], 95)))
+        # heartbeat
+        self.logger.record(f"{self.prefix}/timesteps", self.num_timesteps)
+        self.logger.dump(self.model.num_timesteps)
+        # clear
+        for k in self._buf:
+            self._buf[k].clear()
+
+    # --- SB3 hooks ---
+    def _on_training_start(self) -> None:
+        # Use a numeric flag instead of record_text (not available in your SB3)
+        self.logger.record(f"{self.prefix}/alive", 1.0)
+        self.logger.dump(self.model.num_timesteps)
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", None)
+
+        for i, info in enumerate(infos):
+            sj = info.get(self.prefix)
+            if not isinstance(sj, dict):
                 continue
-            m = float(np.mean(vals))
-            self.logger.record(f"{self.prefix}/{k}_mean", m)
-            any_logged = True
 
-        # p95 for *_raw to catch rare spikes
-        for raw_k in ("temporal_raw", "magnitude_raw", "curvature_raw"):
-            vals = self.buf.get(raw_k, [])
-            if len(vals) >= 10:
-                p95 = float(np.percentile(vals, 95))
-                self.logger.record(f"{self.prefix}/{raw_k}_p95", p95)
-                any_logged = True
+            # init per-env episode sums
+            if i not in self._sum:
+                self._init_sum(i)
 
-        if any_logged:
-            # Force flush so TB updates immediately
-            self.logger.dump(self.model.num_timesteps)
+            # accumulate episode sums
+            self._sum[i]["E"] += float(sj.get("E_step", 0.0))
+            self._sum[i]["V"] += float(sj.get("V_step", 0.0))
+            self._sum[i]["C"] += float(sj.get("C_step", 0.0))
+            self._sum[i]["P"] += float(sj.get("penalty_step", 0.0))
+            self._sum[i]["steps"] += 1
 
-        # clear buffers
-        for k in self.buf:
-            self.buf[k].clear()
+            # interval buffers
+            for k in self._buf:
+                self._buf[k].append(float(sj.get(k, 0.0)))
+
+            # robust episode-end detection (VecEnv / Gymnasium)
+            if dones is not None:
+                done_i = bool(dones[i]) if hasattr(dones, "__len__") else bool(dones)
+            else:
+                done_i = False
+            ep_over = done_i or ("episode" in info) or ("terminal_observation" in info) or info.get("TimeLimit.truncated", False)
+
+            if ep_over:
+                s = self._sum[i]
+                self.logger.record(f"{self.prefix}/E_sum", s["E"])
+                self.logger.record(f"{self.prefix}/V_sum", s["V"])
+                self.logger.record(f"{self.prefix}/C_sum", s["C"])
+                self.logger.record(f"{self.prefix}/penalty_sum", s["P"])
+                self.logger.record(f"{self.prefix}/steps_ep", s["steps"])
+                self.logger.dump(self.model.num_timesteps)
+                self._init_sum(i)
+
+        # periodic interval stats
+        if self.interval and (self.num_timesteps % self.interval == 0):
+            self._record_interval()
+        return True
