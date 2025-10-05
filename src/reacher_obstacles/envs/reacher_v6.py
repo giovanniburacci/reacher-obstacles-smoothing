@@ -45,6 +45,11 @@ CONFIGS = {
         'target': (-0.1, 0.1),
         'obstacles': [(0.12,0.2),(0,0.1),(-0.25,0.1)]
     },
+    # used for hardest env in RM
+    'FTO4b': {
+        'target': (0.06, 0.6), # unused target, RM will set it
+        'obstacles': [(0.15, 0.15), (-0.18, 0.18), (-0.15, -0.15)],
+    },
 }
 
 class EnvConfig():

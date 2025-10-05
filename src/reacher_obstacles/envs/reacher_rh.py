@@ -34,6 +34,9 @@ class RewardHeuristic(Wrapper):
         self.gmap[r0, c0] = 2 * self.bins
         # current target (set via RM routing)
         tr, tc = self._to_r_c(self.env.unwrapped.target)
+        print("aaaaaaaa")
+        print(self.gmap)
+        print("tr", tr, "tc", tc)
         assert self.gmap[tr, tc] == -1, "Target cell occupied by obstacle"
         self.gmap[tr, tc] = 0
         self._last_goal = np.array(self.env.unwrapped.target, dtype=float)
@@ -144,7 +147,7 @@ def env_register(idreg, max_episode_steps=300, time_beta=1.0, absorb_goal=False)
 
 rew_list = ['rhV', 'rsV']
 
-for conf in ["FT", "FTO1", "FTO1b", "FTO2", "FTO2b", "FTO2c", "FTU", "FTO3", "FTO3b"]:
+for conf in ["FT", "FTO1", "FTO1b", "FTO2", "FTO2b", "FTO2c", "FTU", "FTO3", "FTO3b", "FTO4b"]:
     for rew in rew_list:
         env_register(f"Reacher-v6_{conf}_{rew}")
         env_register(f"Reacher3-v6_{conf}_{rew}")

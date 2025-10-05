@@ -277,13 +277,14 @@ for t in range(300):
 
     # --- viewer updates (every frame) ---
     if render_mode == "human":
-        # 1) hide the built-in red target once
-        if args.hide_builtin_target and not _hidden_builtin:
-            _hide_builtin_target(env)
-            _hidden_builtin = True
+        if args.rm:
+            # 1) hide the built-in red target once
+            if args.hide_builtin_target and not _hidden_builtin:
+                _hide_builtin_target(env)
+                _hidden_builtin = True
 
-        # 2) draw waypoint markers (must be re-added each render)
-        _draw_waypoints(env, wps)
+            # 2) draw waypoint markers (must be re-added each render)
+            _draw_waypoints(env, wps)
 
         # 3) fingertip trail
         env.unwrapped.mujoco_renderer.viewer.add_marker(
