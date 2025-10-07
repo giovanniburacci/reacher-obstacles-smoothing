@@ -34,9 +34,6 @@ class RewardHeuristic(Wrapper):
         self.gmap[r0, c0] = 2 * self.bins
         # current target (set via RM routing)
         tr, tc = self._to_r_c(self.env.unwrapped.target)
-        print("aaaaaaaa")
-        print(self.gmap)
-        print("tr", tr, "tc", tc)
         assert self.gmap[tr, tc] == -1, "Target cell occupied by obstacle"
         self.gmap[tr, tc] = 0
         self._last_goal = np.array(self.env.unwrapped.target, dtype=float)
