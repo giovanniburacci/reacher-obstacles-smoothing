@@ -25,24 +25,63 @@ class RewardHeuristic(Wrapper):
 
     def _rebuild_goal_map(self):
         self.gmap = np.zeros((self.bins, self.bins)) - 1
+
         # obstacles
         for jo in range(self.env.unwrapped.nobstacles):
             r, c = self._to_r_c(self.unwrapped.obstacles[jo])
             self.gmap[r, c] = 2 * self.bins
+
         # origin
         r0, c0 = self._to_r_c(np.array([0, 0]))
         self.gmap[r0, c0] = 2 * self.bins
-        # current target (set via RM routing)
+
+        # optional U-obstacle overlay (preserved from old impl)
+        if getattr(self.env.unwrapped, "uobstacle", False):
+            uobstmap = np.array(
+                [[0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 [0, 0, 18, 18, 18, 0, 0, 0, 0],
+                 [0, 0, 18, 0, 18, 0, 0, 0, 0],
+                 [0, 0, 18, 0, 18, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0, 0, 0, 0]]
+            )
+            self.gmap = self.gmap + uobstmap
+
+        # set goal and BFS fill
         tr, tc = self._to_r_c(self.env.unwrapped.target)
         assert self.gmap[tr, tc] == -1, "Target cell occupied by obstacle"
         self.gmap[tr, tc] = 0
+        self._bfs_fill(tr, tc)
+
+        # remember current goal
         self._last_goal = np.array(self.env.unwrapped.target, dtype=float)
+
 
     def _to_r_c(self, pos):
         # continuous x,y to discrete r,c
         c = int((pos[0] + 0.45) / 0.1)
         r = int((0.45 - pos[1]) / 0.1)
         return r, c
+
+    def _bfs_fill(self, tr, tc):
+        # BFS fill with L1 distances starting from (tr, tc)
+        q = Queue(maxsize=self.bins * self.bins)
+        q.put((tr, tc))
+        while not q.empty():
+            r, c = q.get()
+            v = self.gmap[r, c]
+            if r > 0 and self.gmap[r - 1, c] == -1:
+                self.gmap[r - 1, c] = v + 1; q.put((r - 1, c))
+            if r < self.bins - 1 and self.gmap[r + 1, c] == -1:
+                self.gmap[r + 1, c] = v + 1; q.put((r + 1, c))
+            if c > 0 and self.gmap[r, c - 1] == -1:
+                self.gmap[r, c - 1] = v + 1; q.put((r, c - 1))
+            if c < self.bins - 1 and self.gmap[r, c + 1] == -1:
+                self.gmap[r, c + 1] = v + 1; q.put((r, c + 1))
+
 
     # ---------------------------
 
@@ -51,8 +90,13 @@ class RewardHeuristic(Wrapper):
         g = np.array(self.env.unwrapped.target, dtype=float)
         print(f"[RH] reset goal -> {g.tolist()}", flush=True)
         self._rebuild_goal_map()
+        print("[DBG] gmap coverage:",
+              "reachable=", int(np.sum(self.gmap >= 0)),
+              "obstacles=", int(np.sum(self.gmap == 2*self.bins)),
+              "unreachable(-1)=", int(np.sum(self.gmap == -1)), flush=True)
         self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
         return obs, info
+
 
     def reward_heuristic(self):
         ftpos = self.env.unwrapped.data.body('fingertip').xpos
@@ -79,6 +123,7 @@ class RewardHeuristic(Wrapper):
 
         # AFTER step: see if RM routing changed the goal for the next step
         goal_after = np.array(self.env.unwrapped.target, dtype=float)
+        print(self.gmap)
         if not np.allclose(goal_after, goal_before, atol=1e-9):
             print(f"[RH] goal changed AFTER step: {goal_before.tolist()} -> {goal_after.tolist()} (t={self._dbg_step})", flush=True)
             # the RM routed; rebuild internal map to the new goal
@@ -126,7 +171,7 @@ def reacher_rh(**args):
     return env
 
 
-def env_register(idreg, max_episode_steps=300, time_beta=1.0, absorb_goal=False):
+def env_register(idreg, max_episode_steps=50, time_beta=1.0, absorb_goal=False):
     v = idreg.split('_')
     envid = v[0] + "_" + v[1]
     rs = (v[2] == 'rsV')
