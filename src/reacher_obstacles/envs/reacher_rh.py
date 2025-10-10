@@ -23,6 +23,9 @@ class RewardHeuristic(Wrapper):
         self.time_beta = float(time_beta)
         self.absorb_goal = bool(absorb_goal)
 
+        # track which goal the map was last built for
+        self._last_goal = None
+
     def _rebuild_goal_map(self):
         self.gmap = np.zeros((self.bins, self.bins)) - 1
 
@@ -59,7 +62,6 @@ class RewardHeuristic(Wrapper):
         # remember current goal
         self._last_goal = np.array(self.env.unwrapped.target, dtype=float)
 
-
     def _to_r_c(self, pos):
         # continuous x,y to discrete r,c
         c = int((pos[0] + 0.45) / 0.1)
@@ -82,7 +84,6 @@ class RewardHeuristic(Wrapper):
             if c < self.bins - 1 and self.gmap[r, c + 1] == -1:
                 self.gmap[r, c + 1] = v + 1; q.put((r, c + 1))
 
-
     # ---------------------------
 
     def reset(self, *, seed=None, options=None):
@@ -90,17 +91,14 @@ class RewardHeuristic(Wrapper):
         g = np.array(self.env.unwrapped.target, dtype=float)
         print(f"[RH] reset goal -> {g.tolist()}", flush=True)
         self._rebuild_goal_map()
-        print("[DBG] gmap coverage:",
-              "reachable=", int(np.sum(self.gmap >= 0)),
-              "obstacles=", int(np.sum(self.gmap == 2*self.bins)),
-              "unreachable(-1)=", int(np.sum(self.gmap == -1)), flush=True)
         self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
         return obs, info
-
 
     def reward_heuristic(self):
         ftpos = self.env.unwrapped.data.body('fingertip').xpos
         ftr, ftc = self._to_r_c(ftpos)
+        # todo remove
+        print(self.gmap)
         dvec = self.gmap[ftr, ftc]
         if not self.reward_shaping:
             rh = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)  # <= 0
@@ -111,19 +109,29 @@ class RewardHeuristic(Wrapper):
         return float(rh), int(dvec)
 
     def step(self, action):
+        # if the active goal differs from the goal used to build gmap (e.g., RM routed after reset),
+        # rebuild BEFORE computing reward this step.
+        goal_now = np.array(self.env.unwrapped.target, dtype=float)
+        if (self._last_goal is None) or (not np.allclose(goal_now, self._last_goal, atol=1e-9)):
+            self._rebuild_goal_map()
+            self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
+
         # snapshot current goal (what RH shapes toward this step)
         if not hasattr(self, "_dbg_step"):
             self._dbg_step = 0
         self._dbg_step += 1
 
         goal_before = np.array(self.env.unwrapped.target, dtype=float)
+        # todo remove
+        print(f"[RH] My current goal is {goal_before}", flush=True)
 
         # proceed with env step (RM may route target AFTER this)
         observation, reward, term, trunc, info = super().step(action)
 
         # AFTER step: see if RM routing changed the goal for the next step
         goal_after = np.array(self.env.unwrapped.target, dtype=float)
-        print(self.gmap)
+        # todo remove
+        print(f"[RH] My new goal is {goal_after}", flush=True)
         if not np.allclose(goal_after, goal_before, atol=1e-9):
             print(f"[RH] goal changed AFTER step: {goal_before.tolist()} -> {goal_after.tolist()} (t={self._dbg_step})", flush=True)
             # the RM routed; rebuild internal map to the new goal
