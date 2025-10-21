@@ -97,10 +97,9 @@ class RewardHeuristic(Wrapper):
     def reward_heuristic(self):
         ftpos = self.env.unwrapped.data.body('fingertip').xpos
         ftr, ftc = self._to_r_c(ftpos)
-        # todo remove
-        print(self.gmap)
         dvec = self.gmap[ftr, ftc]
         if not self.reward_shaping:
+            # RHV: value function applied to 9x9 grid with + 1 reward at goal
             rh = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)  # <= 0
         else:
             potential = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)
@@ -109,29 +108,27 @@ class RewardHeuristic(Wrapper):
         return float(rh), int(dvec)
 
     def step(self, action):
-        # if the active goal differs from the goal used to build gmap (e.g., RM routed after reset),
-        # rebuild BEFORE computing reward this step.
-        goal_now = np.array(self.env.unwrapped.target, dtype=float)
-        if (self._last_goal is None) or (not np.allclose(goal_now, self._last_goal, atol=1e-9)):
-            self._rebuild_goal_map()
-            self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
-
         # snapshot current goal (what RH shapes toward this step)
         if not hasattr(self, "_dbg_step"):
             self._dbg_step = 0
         self._dbg_step += 1
 
+        # if the active goal differs from the goal used to build gmap (e.g., RM routed after reset),
+        # rebuild BEFORE computing reward this step.
+        goal_now = np.array(self.env.unwrapped.target, dtype=float)
+        if (self._last_goal is None) or (not np.allclose(goal_now, self._last_goal, atol=1e-9)):
+            print(f"[RH] goal changed AFTER step: {goal_now} (t={self._dbg_step})", flush=True)
+            self._rebuild_goal_map()
+            self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
+
+
         goal_before = np.array(self.env.unwrapped.target, dtype=float)
-        # todo remove
-        print(f"[RH] My current goal is {goal_before}", flush=True)
 
         # proceed with env step (RM may route target AFTER this)
         observation, reward, term, trunc, info = super().step(action)
 
         # AFTER step: see if RM routing changed the goal for the next step
         goal_after = np.array(self.env.unwrapped.target, dtype=float)
-        # todo remove
-        print(f"[RH] My new goal is {goal_after}", flush=True)
         if not np.allclose(goal_after, goal_before, atol=1e-9):
             print(f"[RH] goal changed AFTER step: {goal_before.tolist()} -> {goal_after.tolist()} (t={self._dbg_step})", flush=True)
             # the RM routed; rebuild internal map to the new goal
@@ -179,7 +176,7 @@ def reacher_rh(**args):
     return env
 
 
-def env_register(idreg, max_episode_steps=50, time_beta=1.0, absorb_goal=False):
+def env_register(idreg, max_episode_steps=300, time_beta=1.0, absorb_goal=False):
     v = idreg.split('_')
     envid = v[0] + "_" + v[1]
     rs = (v[2] == 'rsV')

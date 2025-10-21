@@ -404,7 +404,7 @@ class ReacherEnv(MujocoEnv, utils.EzPickle):
         #self.obstacle_config = obstacle_config
         #self.uobstacle = uobstacle
         # if the env is deterministic
-        self.deterministic = True # TODO compute 
+        self.deterministic = True
 
         self.model_obstacles = MODEL_OBSTACLES
         self.nobstacles = 0

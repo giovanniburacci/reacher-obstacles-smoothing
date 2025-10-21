@@ -2,6 +2,6 @@ states: [u0, u1, u2, uF]
 initial: u0
 accepting: [uF]
 transitions:
-  - {src: u0, cond: near_G1, dst: u1, reward: 0.2}
-  - {src: u1, cond: near_G2, dst: u2, reward: 0.2}
-  - {src: u2, cond: near_G3, dst: uF, reward: 1.0}
+  - {src: u0, cond: near_G1, dst: u1, reward: 1}
+  - {src: u1, cond: near_G2, dst: u2, reward: 3}
+  - {src: u2, cond: near_G3, dst: uF, reward: 10}

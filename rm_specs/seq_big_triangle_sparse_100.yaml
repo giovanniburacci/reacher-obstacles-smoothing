@@ -2,9 +2,9 @@ states:    [u0, u1, u2, uF, uX]   # uX = collision sink
 initial:   u0
 accepting: [uF, uX]               # terminate also on collision
 transitions:
-  - {src: u0, cond: near_G1, dst: u1, reward: 1}
-  - {src: u1, cond: near_G2, dst: u2, reward: 3}
-  - {src: u2, cond: near_G3, dst: uF, reward: 10}
+  - {src: u0, cond: near_G1, dst: u1, reward: 0}
+  - {src: u1, cond: near_G2, dst: u2, reward: 0}
+  - {src: u2, cond: near_G3, dst: uF, reward: 100}
   # collisions
   - {src: u0, cond: hit, dst: uX, reward: -10}
   - {src: u1, cond: hit, dst: uX, reward: -10}
