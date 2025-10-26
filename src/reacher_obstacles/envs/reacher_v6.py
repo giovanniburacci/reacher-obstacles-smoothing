@@ -50,6 +50,10 @@ CONFIGS = {
         'target': (0.06, 0.6), # unused target, RM will set it
         'obstacles': [(0.15, 0.15), (-0.18, 0.18), (-0.18, -0.18)],
     },
+    'FTO5': {
+        'target': (-0.075, 0.185),
+        'obstacles': [(-0.10, -0.075)]
+    },
 }
 
 class EnvConfig():

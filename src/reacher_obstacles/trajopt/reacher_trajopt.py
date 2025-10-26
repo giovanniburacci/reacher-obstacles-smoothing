@@ -52,6 +52,14 @@ class ReacherTrajopt():
             self.obs_distance_link1 = 0.05
             self.obs_distance_link2 = 0.05
             self.obs_distance_fingertip = 0.05
+        elif expid == "7b":
+            self.w_vel = 1e-5
+            self.w_acc = 1e-5
+            self.w_target = 1e-1
+            self.w_target_term = 5
+            self.obs_distance_link1 = 0.05
+            self.obs_distance_link2 = 0.05
+            self.obs_distance_fingertip = 0.05
         else:
             raise ValueError(f"Unknown experiment id: {expid}")
 

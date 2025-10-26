@@ -39,8 +39,16 @@ EXPERIMENTS = {
       'envid': "Reacher3-v6_FTO3b_rhV",
       'train_steps': 5e5,
    },
+    '6a': {
+        'envid': "Reacher3-v6_FTO4b",
+        'train_steps': 5e5,
+    },
     '6b': {
         'envid': "Reacher3-v6_FTO4b_rhV",
+        'train_steps': 5e5,
+    },
+    '7b': {
+        'envid': "Reacher3-v6_FTO5",
         'train_steps': 5e5,
     }
 }
