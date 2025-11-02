@@ -212,6 +212,7 @@ def _wrap_with_rm(env: gym.Env, envid: str, args):
         route_target=bool(args.rm_route_target),
         waypoint_order=u_to_wp,
         reward_mode=args.rm_reward_mode,
+        waypoints=wps
     )
     return env
 

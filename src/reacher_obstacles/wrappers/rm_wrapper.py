@@ -19,13 +19,15 @@ class RMWrapper(gym.Wrapper):
     """
 
     def __init__(self, env, rm, labeller, w_rm=1.0, route_target=False,
-                 waypoint_order=None, reward_mode: str = "replace"):
+                 waypoint_order=None, reward_mode: str = "replace", waypoints: Dict[str, Tuple[float, float, float]] = {}):
         super().__init__(env)
         self.rm = rm
         self.labeller = labeller
         self.w_rm = float(w_rm)
         self.route_target = bool(route_target)
         self.u_to_wp = waypoint_order or {}  # map RM state -> waypoint name (e.g. {"u1":"G1"})
+        self.waypoints = waypoints
+        self.env.unwrapped.waypoints = self.waypoints  # expose to env for logging if needed
         self.reward_mode = reward_mode
 
         # extend observation space with one-hot encoding of RM state
@@ -78,6 +80,7 @@ class RMWrapper(gym.Wrapper):
         if self.reward_mode == "replace":
             # strict cross-product baseline: ignore env reward
             r_total = float(self.w_rm * r_rm)
+            r_total = float(r_env)
         else:
             # additive variant: keep env reward too
             r_total = float(r_env + self.w_rm * r_rm)
@@ -107,10 +110,10 @@ class RMWrapper(gym.Wrapper):
             info["routed_to"] = routed_to  # only present when routing occurred
 
         # terminate if env done, truncated, or RM reached accepting state
-        done = terminated or truncated or self.rm.is_terminal()
-
+        # done = terminated or truncated or self.rm.is_terminal()
+        done = truncated
         # truncated and not done is kept for proper Gymnasium return signature
-        return self._augment_obs(obs), r_total, done, truncated and not done, info
+        return self._augment_obs(obs), r_total, truncated, truncated and not done, info
 
     # -------------------------------------------------------------------------
     # helpers

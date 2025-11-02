@@ -43,7 +43,7 @@ CONFIGS = {
     },
     'FTO3b' : {
         'target': (-0.1, 0.1),
-        'obstacles': [(0.12,0.2),(0,0.1),(-0.25,0.1)]
+        'obstacles': [(0.12,0.2),(0,0.1),(-0.3,0.1)]
     },
     # used for hardest env in RM
     'FTO4b': {
@@ -664,7 +664,7 @@ from gymnasium.envs.registration import register
 def reacher_v6(**args):
     return ReacherEnv(**args)
 
-def env_register(idreg, max_episode_steps=300):
+def env_register(idreg, max_episode_steps=100):
     vid = idreg.split('_')
     cfstr = vid[1]
     nj = 2

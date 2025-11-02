@@ -110,49 +110,19 @@ def _draw_waypoints(env, wps: dict):
 
 def _hide_builtin_target(env):
     """
-    Make the original target site/geom invisible without altering obs.
-    Tries in order: site 'target' → geom 'target' → geoms attached to body 'target'.
+    Make the original target site/geom invisible without altering obs
     """
     un = env.unwrapped
     m, s = getattr(un, "model", None), getattr(un, "sim", None)
     if m is None:
         return False
     hidden = False
-    # Try successive options; silence missing handles
-    try:
-        sid = m.site("target").id
-        if hasattr(m, "site_rgba"):
-            rgba = m.site_rgba.copy()
-            rgba[sid, 3] = 0.0
-            m.site_rgba[:] = rgba
-            hidden = True
-    except Exception:
-        pass
-    if not hidden:
-        try:
-            gid = m.geom("target").id
-            if hasattr(m, "geom_rgba"):
-                rgba = m.geom_rgba.copy()
-                rgba[gid, 3] = 0.0
-                m.geom_rgba[:] = rgba
-                hidden = True
-        except Exception:
-            pass
-    if not hidden:
-        try:
-            bid = m.body("target").id
-            if hasattr(m, "geom_rgba") and hasattr(m, "geom_bodyid"):
-                for gid in range(m.ngeom):
-                    if int(m.geom_bodyid[gid]) == int(bid):
-                        m.geom_rgba[gid, 3] = 0.0
-                hidden = True
-        except Exception:
-            pass
-    try:
-        if hidden and s is not None:
-            s.forward()  # refresh viewer
-    except Exception:
-        pass
+    gid = m.geom("target").id
+    if hasattr(m, "geom_rgba"):
+        rgba = m.geom_rgba.copy()
+        rgba[gid, 3] = 0.0
+        m.geom_rgba[:] = rgba
+        hidden = True
     return hidden
 
 # -----------------------------------------------------------------------------
@@ -216,6 +186,7 @@ def _wrap_with_rm(env: gym.Env, envid: str):
         route_target=bool(args.rm_route_target),
         waypoint_order=u_to_wp,
         reward_mode=args.rm_reward_mode,
+        waypoints=wps
     )
     return env
 

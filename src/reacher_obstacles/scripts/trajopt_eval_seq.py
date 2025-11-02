@@ -37,10 +37,6 @@ except KeyError:
 print(f"Experiment: {expid}")
 print(f"Obstacles position: {obstacles_pos}")
 
-# --- MANUALLY SET TARGETS HERE (used only if we regenerate) ---
-targets = [np.array([*CONFIGS[config]['target'], 0.015])]  # edit as needed
-print(f"Targets (sequential, for regeneration if needed): {targets}")
-
 traj_path = f"{project_root()}/trajectories/trajectory_{expid}.npz"
 if (not os.path.isfile(traj_path)) or args.force_training:
     print("Generating trajectory with ReacherTrajoptSequential...")
@@ -56,7 +52,7 @@ if os.path.isfile(traj_path):
     T = np.load(traj_path, allow_pickle=True)
     X = T['X']; A = T['A']; U = T['U']
     # load targets & phase lengths if present; else fallback for old files
-    targets = T['targets'] if 'targets' in T.files else np.array([np.array([*CONFIGS[config]['target'], 0.015])])
+    targets = T['targets']
     phase_lengths = T['phase_lengths'] if 'phase_lengths' in T.files else np.array([len(U)], dtype=int)
 else:
     raise FileNotFoundError("Trajectory not found")
