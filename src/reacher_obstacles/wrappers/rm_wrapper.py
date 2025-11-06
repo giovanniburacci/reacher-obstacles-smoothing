@@ -79,7 +79,7 @@ class RMWrapper(gym.Wrapper):
         # compute final reward depending on mode
         if self.reward_mode == "replace":
             # strict cross-product baseline: ignore env reward
-            r_total = float(self.w_rm * r_rm)
+            # r_total = float(self.w_rm * r_rm)
             r_total = float(r_env)
         else:
             # additive variant: keep env reward too
@@ -110,10 +110,13 @@ class RMWrapper(gym.Wrapper):
             info["routed_to"] = routed_to  # only present when routing occurred
 
         # terminate if env done, truncated, or RM reached accepting state
-        # done = terminated or truncated or self.rm.is_terminal()
-        done = truncated
+        done = terminated or truncated or self.rm.is_terminal()
+
+        # set done = truncated if trying out non-terminal tasks
+        # done = truncated
+
         # truncated and not done is kept for proper Gymnasium return signature
-        return self._augment_obs(obs), r_total, truncated, truncated and not done, info
+        return self._augment_obs(obs), r_total, done, truncated and not done, info
 
     # -------------------------------------------------------------------------
     # helpers

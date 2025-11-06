@@ -201,10 +201,11 @@ class RewardHeuristic(Wrapper):
         # print(f"[RH] D_{k} at cell ({ftr},{ftc}) = {Dk} (local d={dvec_local})", flush=True)
         dvec = Dk
 
-        # --------- UNCHANGED reward shaping logic ----------
         if not self.reward_shaping:
             # RHV: value function applied to 9x9 grid with +1 reward at goal
-            rh = 1.0 * (1.0 * self.abs_gamma**(dvec - 1.0))  # <= 0   (same as your file)
+            rh = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)  # <= 0   (same as your file)
+            if dvec == 0 and is_final:
+                rh = 0.0
         else:
             potential = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)
             rh = self.abs_gamma * potential - self.last_potential
@@ -231,10 +232,10 @@ class RewardHeuristic(Wrapper):
         # print(f"[RH] reward heuristic: {rh} (dvec={dvec}) reward dist: {info.get('reward_dist', 0.0)}", flush=True)
         # near-goal tweak
         if dvec <= 1 and is_final:
-            reward += 0.5 + np.clip(info.get("reward_dist", 0.0), -0.5, 0.0)
+            reward += 0.3 + np.clip(info.get("reward_dist", 0.0), -0.5, 0.0)
             if dvec == 0:
                 print(f"[RH] reached final goal at step!", flush=True)
-                reward += 5
+                reward += 0.5
 
         # print(f"[RH] total reward: {reward} (time_penalty: {time_penalty})", flush=True)
         # print(f"------------------------------------------------------------------------", flush=True)
