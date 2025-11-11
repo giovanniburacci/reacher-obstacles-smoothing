@@ -60,7 +60,7 @@ parser.add_argument("--rm-route-target", action="store_true",
 parser.add_argument("--rm-map", type=str, default=None,
                     help='Mapping from RM state to waypoint name, e.g. {"u1":"G1","u2":"G2"}')
 parser.add_argument("--rm-reward-mode", choices=["add", "replace"], default="add")
-parser.add_argument("--play-fl", help="Choose if playing FL")
+parser.add_argument("--play-fl", help="Choose if playing FL", action="store_true")
 
 # ---------- Viewer cosmetics ----------
 parser.add_argument("--hide-builtin-target", action="store_true",
@@ -273,7 +273,6 @@ def _wrap_fl_with_rm(env):
     labeller = GridLabeller(
         waypoint_cells=wps,
         desc=desc,
-        near_radius=0,
         near_prefix="near_",
         hit_label="hit",
         grid_n=9,
@@ -292,7 +291,7 @@ def _wrap_fl_with_rm(env):
         labeller=labeller,
         w_rm=1.0,
         route_target=True,
-        reward_mode="replace",
+        reward_mode="replace"
     )
     return fl_env
 
@@ -317,7 +316,7 @@ if len(envid.split('_')) == 3 and envid.split('_')[2] == 'rhV' and args.play_fl:
     cache_key = envid.split('_')[0] + '_' + envid.split('_')[1]
     path = os.path.join(working_path, cache_dir, cache_key, "Q.npy")
     Q = np.load(path)
-    _greedy_replay(replay_fl, Q, episodes=1,max_steps=100, render=True, sleep_s=0.1)
+    _greedy_replay(replay_fl, Q, episodes=1,max_steps=100, render=True)
 
 
 for t in range(300):

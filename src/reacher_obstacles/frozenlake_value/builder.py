@@ -205,10 +205,7 @@ def learn_v_table(
         )
         print(f"Q: {Q}")
         print(f"V: {V}")
-        stats = _greedy_replay(env_replay, Q, episodes=replay_episodes,
-                               max_steps=max_steps, render=render_replay, sleep_s=replay_sleep_s)
-        print(f"[FL V-builder] Greedy replay: success={stats['success_rate']:.2f}, "
-              f"avg_len={stats['avg_len']:.1f} over {stats['episodes']} eps")
+        _greedy_replay(env_replay, Q, episodes=replay_episodes, max_steps=max_steps, render=render_replay)
         try:
             env_replay.close()
         except Exception:

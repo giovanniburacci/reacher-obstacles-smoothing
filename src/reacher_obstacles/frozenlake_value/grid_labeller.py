@@ -74,7 +74,7 @@ class GridLabeller:
         for name, (ri, ci) in self.waypoint_cells.items():
             if self.continuous:
                 ri, ci = _to_r_c([ri, ci])
-            if abs(r - ri) == abs(c - ci):
+            if r == ri and c == ci:
                 labels.add(f"{self.near_prefix}{name}")
 
         return labels
