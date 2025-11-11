@@ -1,11 +1,16 @@
 __credits__ = ["Kallinteris-Andreas"]
 
+import os
 import numpy as np
+from contextlib import contextmanager
 from queue import Queue
 import gymnasium as gym
 from gymnasium import Wrapper
 from gymnasium.envs.registration import register
-
+from reacher_obstacles.frozenlake_value import learn_v_table, desc_from_gmap
+from reacher_obstacles.frozenlake_value.grid_labeller import GridLabeller
+import copy
+from reacher_obstacles.rm.reward_machine import RewardMachine
 
 class RewardHeuristic(Wrapper):
 
@@ -13,6 +18,7 @@ class RewardHeuristic(Wrapper):
                  reward_shaping=False,
                  time_beta: float = 1.0,
                  absorb_goal: bool = False,
+                 envid: str = "",
                  **kwargs):
         super().__init__(env)
         self.bins = 9
@@ -20,16 +26,119 @@ class RewardHeuristic(Wrapper):
         self.last_potential = 0.0
         self.reward_shaping = bool(reward_shaping)
         self.abs_gamma = 0.9
+        self.envid = str(envid)
 
         self.time_beta = float(time_beta)
         self.absorb_goal = bool(absorb_goal)
 
-        # route goals cache (no per-goal maps exposed)
+        # route goals cache
         self._route_goals = None
+
+        ## frozen lake
+        self._V9x9 = None              # np.ndarray [K,9,9], built once
+        self._rm = None                # injected by RMWrapper
+        self._labeller = None          # injected by RMWrapper
+        self._rm_state_index = None    # dict name->k
+
+    def set_rm_context(self, rm, labeller):
+        self._rm = rm
+        self._labeller = labeller
+        # build V once we have RM + grid
+        if self._V9x9 is None and hasattr(self, "gmap"):
+            self._build_v_if_needed()
 
     # ---------------------------
     # Helpers
     # ---------------------------
+
+    # POSIX-only file lock (macOS/Linux)
+    @contextmanager
+    def _file_lock(self, lock_path: str):
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            os.close(fd)
+
+    def _cache_path(self) -> str:
+        working_path = os.getcwd()
+        cache_dir = f'cache'
+        cache_key = f'{self.envid}'
+        path = os.path.join(working_path, cache_dir, cache_key, "V.npy")
+        return path
+
+    def _lock_path(self) -> str:
+        p = self._cache_path()
+        return os.path.join(os.path.dirname(p), "V.lock")
+
+    def _try_load_v_from_cache(self) -> bool:
+        path = self._cache_path()
+        try:
+            if os.path.exists(path):
+                self._V9x9 = np.load(path)
+                # build rm state index consistent with current RM
+                self._rm_state_index = {u: i for i, u in enumerate(self._rm.states)}
+                print(f"[ReacherRH] Loaded V from cache: {path} shape={self._V9x9.shape}")
+                return True
+        except Exception as e:
+            print(f"[ReacherRH] V cache load failed: {e}")
+        return False
+
+    def _save_v_q_to_cache(self, Q):
+        path = self._cache_path()
+        dirpath = os.path.dirname(path)
+        try:
+            os.makedirs(dirpath, exist_ok=True)
+            np.save(path, self._V9x9)
+            np.save(dirpath + "/Q.npy", Q)
+            print(f"[ReacherRH] Saved V to cache: {path} shape={self._V9x9.shape}")
+        except Exception as e:
+            print(f"[ReacherRH] V cache save failed: {e}")
+
+    def _build_v_if_needed(self):
+        if self._V9x9 is not None or self._rm is None or self._labeller is None:
+            return
+
+        if self._try_load_v_from_cache():
+            return
+
+        lockfile = self._lock_path()
+        with self._file_lock(lockfile):
+
+            if self._try_load_v_from_cache():
+                return
+
+            waypoint_cells = self._waypoint_cells_9x9()
+            gmap = self._build_base_mask()
+
+            # Learn V on FrozenLake bound by a clone of RM
+            V, rm_states, Q = learn_v_table(
+                gmap=gmap.copy(),
+                rm=copy.deepcopy(self._rm),
+                waypoint_cells_9x9=waypoint_cells,
+                gamma=0.88,
+                episodes=20000,
+                max_steps=300,
+                eps_start=0.6,
+                eps_final=0.2,
+                alpha_start=0.5,
+                alpha_final=0.10,
+                do_replay=True,
+                replay_episodes=1,
+            )
+
+            self._V9x9 = V
+            self._rm_state_index = {u: i for i, u in enumerate(rm_states)}
+
+            self._save_v_q_to_cache(Q)
+
+
 
     def _to_r_c(self, pos):
         """continuous (x,y) -> discrete (r,c) in [0..8]."""
@@ -39,6 +148,27 @@ class RewardHeuristic(Wrapper):
         c = np.clip(c, 0, self.bins - 1)
         return int(r), int(c)
 
+    def _waypoint_cells_9x9(self):
+        """
+        Returns a dict like {"G1": (r,c), "G2": (r,c), ...} with r,c in 0..8,
+        computed with wrapper's discretizer (_to_r_c), so it matches runtime.
+        Falls back to the single target.
+        """
+        cells = {}
+
+        # Try the canonical structure first: dict-like waypoints
+        wps = getattr(self.env.unwrapped, "waypoints", None)
+        # Expecting {"G1": np.array([x,y,...]), "G2": ...}
+        for name, pos in wps.items():
+            # pos can be np.array([x,y]) or a dict with "pos" key; be tolerant
+            if isinstance(pos, dict) and "pos" in pos:
+                xy = pos["pos"]
+            else:
+                xy = pos
+            r, c = self._to_r_c(xy)
+            cells[str(name)] = (int(r), int(c))
+        return cells
+
     def _build_base_mask(self):
         """
         Build base mask into self.gmap:
@@ -46,6 +176,7 @@ class RewardHeuristic(Wrapper):
           obstacles   = large positive (2*bins)
         """
         self.gmap = np.zeros((self.bins, self.bins)) - 1
+
 
         # obstacles
         for jo in range(self.env.unwrapped.nobstacles):
@@ -71,6 +202,7 @@ class RewardHeuristic(Wrapper):
             )
             self.gmap = self.gmap + uobstmap
 
+        return self.gmap
     # ---------------------------
     # Tiny BFS for distances
     # ---------------------------
@@ -119,12 +251,11 @@ class RewardHeuristic(Wrapper):
 
     def _collect_route_goals(self):
         """
-        Collect an *ordered* list of route goals from the env's waypoints.
-        Always convert to [x, y]. Fallback to single target if none found.
+        Collect a list of route goals from the env's waypoints and convert to [x, y].
+        Fallback to single target if none found.
         """
         U = self.env.unwrapped
         try:
-            # dict_values preserves insertion order (Py3.7+)
             goals_vals = getattr(U, 'waypoints', {}).values()
             goals = [np.array(g, dtype=float).reshape(-1)[:2] for g in goals_vals]
             # print(f"[RH] Collected {goals} route goals from waypoints.", flush=True)
@@ -135,7 +266,6 @@ class RewardHeuristic(Wrapper):
 
         # fallback: single target as [x, y]
         tgt_xy = np.array(U.target, dtype=float).reshape(-1)[:2]
-        # print("[RH] Warning: no route goals found; using single target fallback.", flush=True)
         return [tgt_xy]
 
 
@@ -148,36 +278,18 @@ class RewardHeuristic(Wrapper):
         dists = [np.linalg.norm(tgt - g) for g in self._route_goals]
         return int(np.argmin(dists))
 
-    # ---------------------------
-    # Gym API
-    # ---------------------------
-
-    def reset(self, *, seed=None, options=None):
-        obs, info = super().reset(seed=seed)
-
-        # build base grid (free/obstacles), no goal fill
-        self._build_base_mask()
-
-        # cache route list (no maps)
-        self._route_goals = self._collect_route_goals()
-        # print(f"[RH] reset route with {len(self._route_goals)} goal(s).", flush=True)
-
-        # initialize potential baseline (unchanged pattern)
-        self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
-        return obs, info
-
     def _distance_to_completion(self, cell_rc):
         """
-        Compute D_k(c) = d(c, G_k) + sum_{i=k}^{N-1} d(G_i, G_{i+1})
-        entirely on the fly via BFS distances on `self.gmap`.
+        Compute D_k(c) = d(c, G_k) + sum_{i=k}^{N-1} d(G_i, G_{i+1}) entirely on the fly via BFS distances on `self.gmap`.
+        Not used anymore in RHV mode, but kept for logging and RH without V-table.
         """
+
         # current RM stage
         k = self._stage_index_from_active_target()
 
         # cell -> current goal
         gk = self._route_goals[k]
         tr_k, tc_k = self._to_r_c(gk)
-        # print(f"[RH] Computing D_{k} from cell {cell_rc} to goal {gk.tolist()} at ({tr_k},{tc_k})", flush=True)
         Lkc = self._bfs_distance(cell_rc, (tr_k, tc_k))
 
         # tail over remaining consecutive goals
@@ -191,26 +303,54 @@ class RewardHeuristic(Wrapper):
 
         return (Lkc + tail), int(Lkc), int(k), k == len(self._route_goals) - 1
 
+
+    # ---------------------------
+    # Gym API
+    # ---------------------------
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed)
+
+        # build base grid (free/obstacles), no goal fill
+        self._build_base_mask()
+
+        # cache route list (no maps)
+        self._route_goals = self._collect_route_goals()
+
+        # initialize potential baseline (unchanged pattern)
+        self.last_potential = 1.0 * (1.0 * self.abs_gamma**(self.bins * 2) - 1.0)
+
+        self._build_v_if_needed()
+        return obs, info
+
+
     def reward_heuristic(self):
         # fingertip -> discrete cell
         ftpos = self.env.unwrapped.data.body('fingertip').xpos
         ftr, ftc = self._to_r_c(ftpos)
 
+        # If V-table + RM are ready, use V(i,j,k)
+        if self._V9x9 is not None and self._rm is not None and self._rm_state_index is not None:
+            k = self._rm_state_index.get(self._rm.u, 0)
+            rh = float(self._V9x9[k, ftr, ftc])
+            rh -= 1
+
+            # we still want near-goal info & k for logs; reuse existing helpers
+            Dk, dvec_local, k_stage, is_final = self._distance_to_completion((ftr, ftc))
+            return float(rh), int(dvec_local), int(k_stage), is_final
+
         # route-aware abstract distance to completion
         Dk, dvec_local, k, is_final = self._distance_to_completion((ftr, ftc))
-        # print(f"[RH] D_{k} at cell ({ftr},{ftc}) = {Dk} (local d={dvec_local})", flush=True)
         dvec = Dk
 
         if not self.reward_shaping:
-            # RHV: value function applied to 9x9 grid with +1 reward at goal
-            rh = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)  # <= 0   (same as your file)
+            rh = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)  # <= 0
             if dvec == 0 and is_final:
                 rh = 0.0
         else:
             potential = 1.0 * (1.0 * self.abs_gamma**dvec - 1.0)
             rh = self.abs_gamma * potential - self.last_potential
             self.last_potential = potential
-        # ---------------------------------------------------
 
         return float(rh), int(dvec_local), int(k), is_final
 
@@ -224,21 +364,15 @@ class RewardHeuristic(Wrapper):
 
         # RH value + time penalty
         rh, dvec, k, is_final = self.reward_heuristic()
-        # print(f"------------------------------------------------------------------------", flush=True)
+
         dt = float(getattr(self.env.unwrapped, "dt"))
         time_penalty = - self.time_beta * dt
         reward += time_penalty + rh
 
-        # print(f"[RH] reward heuristic: {rh} (dvec={dvec}) reward dist: {info.get('reward_dist', 0.0)}", flush=True)
-        # near-goal tweak
         if dvec <= 1 and is_final:
-            reward += 0.3 + np.clip(info.get("reward_dist", 0.0), -0.5, 0.0)
-            if dvec == 0:
-                print(f"[RH] reached final goal at step!", flush=True)
-                reward += 0.5
-
-        # print(f"[RH] total reward: {reward} (time_penalty: {time_penalty})", flush=True)
-        # print(f"------------------------------------------------------------------------", flush=True)
+           reward += 0.2 + np.clip(info.get("reward_dist", 0.0), -0.5, 0.0)
+           if dvec == 0:
+               reward += 1
 
         # optional absorbing goal
         if self.absorb_goal and dvec == 0:
@@ -259,7 +393,8 @@ def reacher_rh(**args):
     env = RewardHeuristic(env,
                           reward_shaping=args.get('reward_shaping', False),
                           time_beta=args.get('time_beta', 1.0),
-                          absorb_goal=args.get('absorb_goal', False))
+                          absorb_goal=args.get('absorb_goal', False),
+                          envid=args['envid'])
     return env
 
 

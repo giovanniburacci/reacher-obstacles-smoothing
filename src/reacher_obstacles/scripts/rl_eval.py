@@ -1,14 +1,8 @@
-# rl_eval.py
-# -----------------------------------------------------------------------------
-# Evaluate a trained RL policy (PPO or SAC) on a Reacher-based environment.
-# Supports optional Reward Machine wrapper (--rm) for multi-goal evaluation.
-# Computes control energy (Σ dt·||u||²) and accuracy metrics, optionally per-RM goal.
-# -----------------------------------------------------------------------------
-
 import os, os.path, time, argparse, json
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
+import copy
 
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
@@ -23,6 +17,11 @@ try:
     _RM_AVAILABLE = True
 except Exception:
     _RM_AVAILABLE = False
+
+from reacher_obstacles.frozenlake_value.builder import _greedy_replay, desc_from_gmap
+from reacher_obstacles.frozenlake_value.grid_labeller import GridLabeller
+from reacher_obstacles.utils import _to_r_c
+
 
 # optional YAML loader (for --rm-waypoints)
 try:
@@ -61,6 +60,7 @@ parser.add_argument("--rm-route-target", action="store_true",
 parser.add_argument("--rm-map", type=str, default=None,
                     help='Mapping from RM state to waypoint name, e.g. {"u1":"G1","u2":"G2"}')
 parser.add_argument("--rm-reward-mode", choices=["add", "replace"], default="add")
+parser.add_argument("--play-fl", help="Choose if playing FL")
 
 # ---------- Viewer cosmetics ----------
 parser.add_argument("--hide-builtin-target", action="store_true",
@@ -186,7 +186,8 @@ def _wrap_with_rm(env: gym.Env, envid: str):
         route_target=bool(args.rm_route_target),
         waypoint_order=u_to_wp,
         reward_mode=args.rm_reward_mode,
-        waypoints=wps
+        waypoints=wps,
+        print_rew=True,
     )
     return env
 
@@ -238,6 +239,87 @@ errors_cfg = []  # distance to original config target
 errors_rm  = []  # distance to current RM waypoint
 _hidden_builtin = False
 
+
+def _wrap_fl_with_rm(env):
+    """
+    Wrap a FrozenLake env with RM and GridLabeller based on reacher env (used to get obstacles and draw FL desc)
+    """
+
+    fl_rm = load_rm_spec(args.rm_spec)
+
+    wps = _load_waypoints(args.rm_waypoints)
+    for k in wps:
+        wps[k] = wps[k][0:2]
+
+
+
+    print(f"[FL RM] waypoints: {wps}")
+    gmap = np.zeros((9, 9)) - 1
+
+    # obstacles
+    for jo in range(env.unwrapped.nobstacles):
+        r, c = _to_r_c(env.unwrapped.obstacles[jo])
+        gmap[r, c] = 18
+
+
+    # origin
+    r0, c0 = _to_r_c(np.array([0, 0]))
+    gmap[r0, c0] = 18
+
+
+
+    desc = desc_from_gmap(gmap, wps)
+    print("[FL RM] grid map:", desc)
+    labeller = GridLabeller(
+        waypoint_cells=wps,
+        desc=desc,
+        near_radius=0,
+        near_prefix="near_",
+        hit_label="hit",
+        grid_n=9,
+        continuous=True
+    )
+    fl_replay = gym.make(
+        "FrozenLake-v1",
+        desc=desc,
+        is_slippery=False,
+        render_mode="human"
+    )
+
+    fl_env = RMWrapper(
+        fl_replay,
+        rm=copy.deepcopy(fl_rm),
+        labeller=labeller,
+        w_rm=1.0,
+        route_target=True,
+        reward_mode="replace",
+    )
+    return fl_env
+
+def _compute_lipschitz_continuity(U):
+    """
+    Compute and print the Lipschitz continuity for each joint in U.
+    """
+    steps, joints = U.shape[0], U.shape[1]
+    for joint in range(joints):
+        diffs = []
+        for step in range(1, steps):
+            diff = abs(U[step, joint] - U[step - 1, joint])
+            diffs.append(diff)
+        max_diff = max(diffs) if diffs else 0.0
+        print(f"Lipschitz continuity for joint {joint}: {max_diff}")
+
+
+if len(envid.split('_')) == 3 and envid.split('_')[2] == 'rhV' and args.play_fl:
+    replay_fl = _wrap_fl_with_rm(env)
+    working_path = os.getcwd()
+    cache_dir = f'cache'
+    cache_key = envid.split('_')[0] + '_' + envid.split('_')[1]
+    path = os.path.join(working_path, cache_dir, cache_key, "Q.npy")
+    Q = np.load(path)
+    _greedy_replay(replay_fl, Q, episodes=1,max_steps=100, render=True, sleep_s=0.1)
+
+
 for t in range(300):
     action, _ = model.predict(obs, deterministic=True)
     obs, reward, terminated, truncated, info = env.step(action)
@@ -282,6 +364,7 @@ for t in range(300):
 # -----------------------------------------------------------------------------
 # Post-evaluation metrics
 # -----------------------------------------------------------------------------
+
 U = np.vstack(U) if len(U) else np.zeros((0, 0))
 T = U.shape[0]
 E_action_tot = float(np.sum(np.sum(U**2, axis=1)) * dt) if T > 0 else float("nan")
@@ -295,8 +378,9 @@ else:
     print(f"ACC ERROR (vs RM waypoint): {np.mean(errors_rm) if errors_rm else float('nan')}")
 
 # -----------------------------------------------------------------------------
-# Plot torque/action profiles
+# Plot torque profiles
 # -----------------------------------------------------------------------------
+
 plt.figure()
 plt.plot(U)
 plt.title(f"{args.model_name} | Mean Error={np.mean(errors) if errors else np.mean(errors_rm):.3f} "
@@ -308,5 +392,8 @@ if U.size:
 plt.legend([f"Joint {i+1}" for i in range(U.shape[1])])
 plt.savefig(f"images/{expid}_actions.png", dpi=300, bbox_inches="tight")
 
+_compute_lipschitz_continuity(U)
+
 env.close()
 eval_env.close()
+

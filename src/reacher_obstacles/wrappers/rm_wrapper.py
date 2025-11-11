@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Tuple, Dict, Any, List
 import numpy as np
 import gymnasium as gym
+from gymnasium import spaces
 
 from reacher_obstacles.rm.reward_machine import RewardMachine
 from reacher_obstacles.rm.labeller import Labeller
@@ -10,18 +11,15 @@ from reacher_obstacles.rm.labeller import Labeller
 class RMWrapper(gym.Wrapper):
     """
     Cross-product baseline between environment and Reward Machine.
-
-      - reward_mode="replace": reward = w_rm * r_rm  (strict baseline)
-      - reward_mode="add":     reward = r_env + w_rm * r_rm  (non-baseline variant)
-
-    Optionally, if the env exposes a method to set the active target, route it
-    automatically whenever the RM changes state.
+      - reward_mode="replace": reward = r_env  (used for wrapping the Reacher env, since r_env is the RHV)
+      - reward_mode="add":     reward = w_rm * r_rm  (used for wrapping FL, where the env is trained using the reward machine only)
     """
 
     def __init__(self, env, rm, labeller, w_rm=1.0, route_target=False,
-                 waypoint_order=None, reward_mode: str = "replace", waypoints: Dict[str, Tuple[float, float, float]] = {}):
+                 waypoint_order=None, reward_mode: str = "replace", waypoints: Dict[str, Tuple[float, float, float]] = {}, print_rew: bool = False):
         super().__init__(env)
         self.rm = rm
+        self.print_rew = print_rew
         self.labeller = labeller
         self.w_rm = float(w_rm)
         self.route_target = bool(route_target)
@@ -34,13 +32,36 @@ class RMWrapper(gym.Wrapper):
         orig = self.observation_space
         k = len(self.rm.states)
         self._onehot_len = k
-        low = np.concatenate([orig.low, np.zeros(k, dtype=orig.low.dtype)])
-        high = np.concatenate([orig.high, np.ones(k, dtype=orig.high.dtype)])
-        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=orig.dtype)
+        self._obs_is_discrete = isinstance(orig, spaces.Discrete)
+        self._orig_obs_space = orig
+        self._rm_dim = len(self.rm.states)
+
+        if self._obs_is_discrete:
+            # Represent obs as one-hot (orig.n) and append RM one-hot (K)
+            self.observation_space = spaces.Box(
+                low=0.0, high=1.0, shape=(orig.n + self._rm_dim,), dtype=np.float32
+            )
+        else:
+            low = np.concatenate([orig.low, np.zeros(k, dtype=orig.low.dtype)])
+            high = np.concatenate([orig.high, np.ones(k, dtype=orig.high.dtype)])
+            self.observation_space = gym.spaces.Box(low=low, high=high, dtype=orig.dtype)
+
+    def _one_hot(self, idx, n):
+        v = np.zeros(n, dtype=np.float32)
+        if 0 <= int(idx) < n:
+            v[int(idx)] = 1.0
+        return v
 
     def reset(self, **kwargs):
         # 1) reset RM to its initial state
         self.rm.reset()
+
+        # 1.b) hand RM context to inner env if it supports it
+        if hasattr(self.env, "set_rm_context"):
+            try:
+                self.env.set_rm_context(self.rm, self.labeller)
+            except Exception:
+                pass
 
         # 2) if routing is enabled, set env target to the waypoint of u0
         #    (important: do this before env.reset so inner env sees correct goal)
@@ -54,11 +75,19 @@ class RMWrapper(gym.Wrapper):
         if self.route_target:
             self._route_target()
 
+        if self._obs_is_discrete:
+            obs = np.concatenate([
+                self._one_hot(obs, self._orig_obs_space.n),
+                self._one_hot(self.rm.states.index(self.rm.u), self._rm_dim),
+            ], axis=0)
+            return obs, info
+
         return self._augment_obs(obs), info
 
     def step(self, action):
         # step environment normally
         obs, r_env, terminated, truncated, info = self.env.step(action)
+
 
         # build proposition set σ from labeller
         sigma = set(self.labeller.label(self.env))
@@ -78,12 +107,11 @@ class RMWrapper(gym.Wrapper):
 
         # compute final reward depending on mode
         if self.reward_mode == "replace":
-            # strict cross-product baseline: ignore env reward
-            # r_total = float(self.w_rm * r_rm)
+            # replace variant: use only env reward (which is RHV in Reacher, or the sparse native reward)
             r_total = float(r_env)
         else:
-            # additive variant: keep env reward too
-            r_total = float(r_env + self.w_rm * r_rm)
+            # only use reward from RM (scaled)
+            r_total = float(self.w_rm * r_rm)
 
         # diagnostic: compute distance to current waypoint (for logs)
         wp_name = self.u_to_wp.get(self.rm.u) if hasattr(self, "u_to_wp") else None
@@ -111,6 +139,16 @@ class RMWrapper(gym.Wrapper):
 
         # terminate if env done, truncated, or RM reached accepting state
         done = terminated or truncated or self.rm.is_terminal()
+
+        if self._obs_is_discrete:
+            """
+                Frozen lake case: discrete obs space represented as one-hot encoding
+            """
+            obs = np.concatenate([
+                self._one_hot(obs, self._orig_obs_space.n),
+                self._one_hot(self.rm.states.index(self.rm.u), self._rm_dim),
+            ], axis=0)
+            return obs, self.w_rm * r_rm -0.01, done, truncated and not done, info
 
         # set done = truncated if trying out non-terminal tasks
         # done = truncated
@@ -141,8 +179,7 @@ class RMWrapper(gym.Wrapper):
 
     def _route_target(self):
         """
-        If routing is enabled and mapping exists, set the env's current
-        target to the waypoint corresponding to the active RM state.
+        If routing is enabled and mapping exists, set the env's current target to the waypoint corresponding to the active RM state.
         This keeps multi-goal tasks synchronized between RM and env.
         """
         if not self.route_target:

@@ -48,7 +48,7 @@ CONFIGS = {
     # used for hardest env in RM
     'FTO4b': {
         'target': (0.06, 0.6), # unused target, RM will set it
-        'obstacles': [(0.15, 0.15), (-0.18, 0.18), (-0.18, -0.18)],
+        'obstacles': [(0.20, 0.22), (-0.22, 0.18), (-0.10, -0.26)],
     },
     'FTO5': {
         'target': (-0.075, 0.185),

@@ -1,6 +1,6 @@
 import os
 from typing import Type, TypeVar
-
+import numpy as np
 from typing import Literal
 
 
@@ -22,3 +22,11 @@ def project_root() -> str:
 
 def src_dir() -> str:
     return project_root() + "/src/reacher_obstacles"
+
+def _to_r_c(pos):
+    """continuous (x,y) -> discrete (r,c) in [0..8]."""
+    c = int((pos[0] + 0.45) / 0.1)
+    r = int((0.45 - pos[1]) / 0.1)
+    r = np.clip(r, 0, 9 - 1)
+    c = np.clip(c, 0, 9 - 1)
+    return int(r), int(c)

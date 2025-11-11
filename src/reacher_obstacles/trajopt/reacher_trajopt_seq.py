@@ -24,7 +24,7 @@ class ReacherTrajoptSequential:
             expids_per_stage: Sequence[str] = None,
     ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
         """
-            targets: list/sequence of target positions (2D or 3D). If 2D, your RobotModel already pads z to 0.015 internally.
+            targets: list/sequence of target positions (2D or 3D). If 2D, the RobotModel already pads z to 0.015 internally.
             q0:      initial configuration for the first stage.
             expids_per_stage: optional list of expid (weights/clearances) per stage; if None, reuse self.expid for all stages.
 
