@@ -109,6 +109,7 @@ class RMWrapper(gym.Wrapper):
         if self.reward_mode == "replace":
             # replace variant: use only env reward (which is RHV in Reacher, or the sparse native reward)
             r_total = float(r_env)
+            print("r for this step:", r_total) if self.print_rew else None
         else:
             # only use reward from RM (scaled)
             r_total = float(self.w_rm * r_rm)

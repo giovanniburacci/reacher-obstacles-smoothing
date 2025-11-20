@@ -122,7 +122,7 @@ class RewardHeuristic(Wrapper):
                 gmap=gmap.copy(),
                 rm=copy.deepcopy(self._rm),
                 waypoint_cells_9x9=waypoint_cells,
-                gamma=0.88,
+                gamma=0.8,
                 episodes=20000,
                 max_steps=300,
                 eps_start=0.6,

@@ -34,17 +34,17 @@ def desc_from_gmap(gmap: np.ndarray, waypoints) -> GridDesc:
             "left":  c,
         }
         # tie-break preference: down > up > right > left
-        order = ["down", "up", "right", "left"]
-        direction = min(order, key=lambda k: (dists[k], order.index(k)))
+        # order = ["down", "up", "right", "left"]
+        # direction = min(order, key=lambda k: (dists[k], order.index(k)))
 
-        if direction == "down":
-            for rr in range(r, H):        desc[rr, c] = 'H'
-        elif direction == "up":
-            for rr in range(0, r + 1):    desc[rr, c] = 'H'
-        elif direction == "right":
-            for cc in range(c, W):        desc[r, cc] = 'H'
-        elif direction == "left":
-            for cc in range(0, c + 1):    desc[r, cc] = 'H'
+        # if direction == "down":
+        #     for rr in range(r, H):        desc[rr, c] = 'H'
+        # elif direction == "up":
+        #     for rr in range(0, r + 1):    desc[rr, c] = 'H'
+        # elif direction == "right":
+        #     for cc in range(c, W):        desc[r, cc] = 'H'
+        # elif direction == "left":
+        #     for cc in range(0, c + 1):    desc[r, cc] = 'H'
 
     # TODO uncomment to have multiple goals but non working
     # for wp_name, (r, c) in waypoints.items():
